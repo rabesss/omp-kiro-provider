@@ -29,6 +29,8 @@ import type { ContextLike, MessageLike, ToolLike, ToolCallContent } from "./type
 // ---------------------------------------------------------------------------
 
 const KIRO_MAX_TOOL_NAME = 64
+const KIRO_MAX_TOOL_DESCRIPTION = 10000
+const KIRO_MAX_PAYLOAD_BYTES = 600000
 
 /** Map from truncated name back to original name (populated per request). */
 const truncationMap = new Map<string, string>()
@@ -88,16 +90,121 @@ function systemPromptText(prompt: ContextLike["systemPrompt"]): string {
 // Tool conversion
 // ---------------------------------------------------------------------------
 
-function toolsToKiroFormat(tools?: readonly ToolLike[]): unknown[] | undefined {
-  if (!tools || tools.length === 0) return undefined
+function toolsToKiroFormat(
+  tools?: readonly ToolLike[],
+): { tools?: unknown[]; documentation?: string } {
+  if (!tools || tools.length === 0) return {}
 
-  return tools.map((tool) => ({
-    toolSpecification: {
-      name: truncateToolName(tool.name),
-      description: tool.description ?? "",
-      inputSchema: { json: tool.input_schema as Record<string, unknown> },
-    },
-  }))
+  const documentation: string[] = []
+  const converted = tools.map((tool) => {
+    const name = truncateToolName(tool.name)
+    let description = tool.description?.trim() || `Tool: ${tool.name}`
+    if (description.length > KIRO_MAX_TOOL_DESCRIPTION) {
+      documentation.push(`## Tool: ${name}\n\n${description}`)
+      description = `[Full documentation in prompt under '## Tool: ${name}']`
+    }
+
+    return {
+      toolSpecification: {
+        name,
+        description,
+        inputSchema: {
+          json: sanitizeJsonSchema(
+            tool.input_schema ?? toJsonSchema(tool.parameters),
+          ),
+        },
+      },
+    }
+  })
+
+  return {
+    tools: converted,
+    documentation: documentation.length > 0
+      ? `# Tool Documentation\n\n${documentation.join("\n\n---\n\n")}`
+      : undefined,
+  }
+}
+
+/**
+ * Kiro rejects JSON Schema keywords accepted by OMP tool definitions with a
+ * generic 400 response. Remove them recursively before sending the request.
+ */
+function sanitizeJsonSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(sanitizeJsonSchema)
+  if (!isRecord(schema)) return schema
+
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "additionalProperties") continue
+    if (key === "required" && Array.isArray(value) && value.length === 0) continue
+    sanitized[key] = sanitizeJsonSchema(value)
+  }
+  return sanitized
+}
+
+function toJsonSchema(schema: unknown): unknown {
+  if (!isRecord(schema)) return {}
+
+  const kind = typeof schema.kind === "string"
+    ? schema.kind
+    : typeof schema.type === "string"
+      ? schema.type
+      : undefined
+  if (Array.isArray(schema.enum)) {
+    return { type: typeof schema.enum[0], enum: schema.enum }
+  }
+
+  switch (kind) {
+    case "string":
+    case "String":
+    case "number":
+    case "Number":
+    case "boolean":
+    case "Boolean":
+      return { type: kind.toLowerCase() }
+    case "object":
+    case "Object": {
+      const properties: Record<string, unknown> = {}
+      const inferredRequired: string[] = []
+      const sourceProperties = isRecord(schema.properties) ? schema.properties : {}
+      const optional = Array.isArray(schema.optional) ? schema.optional : []
+      for (const [key, value] of Object.entries(sourceProperties)) {
+        properties[key] = toJsonSchema(value)
+        if (!(isRecord(value) && value.optional === true) && !optional.includes(key)) {
+          inferredRequired.push(key)
+        }
+      }
+
+      const explicitRequired = Array.isArray(schema.required) ? schema.required : undefined
+      const required = explicitRequired ?? inferredRequired
+      return {
+        type: "object",
+        ...(Object.keys(properties).length > 0 ? { properties } : {}),
+        ...(required.length > 0 ? { required } : {}),
+      }
+    }
+    case "array":
+    case "Array":
+      return { type: "array", items: toJsonSchema(schema.items ?? schema.element) }
+    case "union":
+    case "Union": {
+      const variants = Array.isArray(schema.variants)
+        ? schema.variants
+        : Array.isArray(schema.anyOf)
+          ? schema.anyOf
+          : []
+      for (const variant of variants) {
+        const converted = toJsonSchema(variant)
+        if (isRecord(converted) && Object.keys(converted).length > 0) return converted
+      }
+      return {}
+    }
+    case "optional":
+    case "Optional":
+      return toJsonSchema(schema.wrapped ?? schema.inner)
+    default:
+      return {}
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +576,10 @@ export function buildKiroPayload(
 
   // Add tools and tool results to userInputMessageContext
   const userCtx: Record<string, unknown> = {}
-  const kiroTools = toolsToKiroFormat(context.tools)
+  const { tools: kiroTools, documentation } = toolsToKiroFormat(context.tools)
+  if (documentation) {
+    userInputMessage.content = `${userInputMessage.content}\n\n---\n${documentation}`
+  }
   if (kiroTools) userCtx.tools = kiroTools
   if (currentToolResults) userCtx.toolResults = currentToolResults
   if (Object.keys(userCtx).length > 0) {
@@ -494,5 +604,26 @@ export function buildKiroPayload(
     payload.profileArn = profileArn
   }
 
+  trimPayloadHistory(payload)
+
   return payload
+}
+
+function trimPayloadHistory(payload: KiroPayload): void {
+  const size = () => Buffer.byteLength(JSON.stringify(payload), "utf8")
+  const history = payload.conversationState.history
+
+  while (history && history.length > 2 && size() > KIRO_MAX_PAYLOAD_BYTES) {
+    history.shift()
+    while (history.length > 0 && !hasUserMessage(history[0])) history.shift()
+  }
+
+  if (history?.length === 0) delete payload.conversationState.history
+
+  const finalSize = size()
+  if (finalSize > KIRO_MAX_PAYLOAD_BYTES) {
+    throw new Error(
+      `Kiro request payload is ${finalSize} bytes, above the ${KIRO_MAX_PAYLOAD_BYTES}-byte safe limit`,
+    )
+  }
 }

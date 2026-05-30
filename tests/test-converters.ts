@@ -118,6 +118,88 @@ describe("buildKiroPayload", () => {
     assert.equal(spec.name.length, 64)
   })
 
+  it("sanitizes schemas and supplies a non-empty tool description", () => {
+    const ctx: ContextLike = {
+      messages: [{ role: "user", content: "test" }],
+      tools: [{
+        name: "strict_tool",
+        description: "",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: [],
+          properties: {
+            nested: {
+              type: "object",
+              additionalProperties: false,
+              required: [],
+            },
+          },
+        },
+      }],
+    }
+
+    const payload = buildKiroPayload("model", ctx)
+    const current = payload.conversationState.currentMessage.userInputMessage
+    const userCtx = current.userInputMessageContext as Record<string, unknown>
+    const tools = userCtx.tools as Array<Record<string, unknown>>
+    const spec = tools[0].toolSpecification as Record<string, unknown>
+    const schema = (spec.inputSchema as Record<string, unknown>).json as Record<string, unknown>
+    const nested = (schema.properties as Record<string, Record<string, unknown>>).nested
+
+    assert.equal(spec.description, "Tool: strict_tool")
+    assert.ok(!("additionalProperties" in schema))
+    assert.ok(!("required" in schema))
+    assert.ok(!("additionalProperties" in nested))
+    assert.ok(!("required" in nested))
+  })
+
+  it("moves overlong tool descriptions into the prompt", () => {
+    const longDescription = "A".repeat(10001)
+    const payload = buildKiroPayload("model", {
+      messages: [{ role: "user", content: "test" }],
+      tools: [{ name: "documented_tool", description: longDescription, input_schema: {} }],
+    })
+    const current = payload.conversationState.currentMessage.userInputMessage
+    const userCtx = current.userInputMessageContext as Record<string, unknown>
+    const tools = userCtx.tools as Array<Record<string, unknown>>
+    const spec = tools[0].toolSpecification as Record<string, unknown>
+
+    assert.equal(spec.description, "[Full documentation in prompt under '## Tool: documented_tool']")
+    assert.ok(String(current.content).includes(`## Tool: documented_tool\n\n${longDescription}`))
+  })
+
+  it("converts OMP-native tool parameters into JSON Schema", () => {
+    const payload = buildKiroPayload("model", {
+      messages: [{ role: "user", content: "test" }],
+      tools: [{
+        name: "omp_tool",
+        description: "OMP schema",
+        parameters: {
+          kind: "object",
+          properties: {
+            command: { kind: "string" },
+            timeout: { kind: "number", optional: true },
+          },
+        },
+      }],
+    })
+    const current = payload.conversationState.currentMessage.userInputMessage
+    const userCtx = current.userInputMessageContext as Record<string, unknown>
+    const tools = userCtx.tools as Array<Record<string, unknown>>
+    const spec = tools[0].toolSpecification as Record<string, unknown>
+    const schema = (spec.inputSchema as Record<string, unknown>).json
+
+    assert.deepEqual(schema, {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        timeout: { type: "number" },
+      },
+      required: ["command"],
+    })
+  })
+
   it("includes profileArn when provided", () => {
     const ctx: ContextLike = {
       systemPrompt: undefined,
@@ -242,6 +324,14 @@ describe("AwsEventStreamParser", () => {
     if (events[0].type === "tool_stop") {
       assert.equal(events[0].stop, true)
     }
+  })
+
+  it("parses a named streamed-tool terminator as tool stop", () => {
+    const parser = new AwsEventStreamParser()
+    const events = parser.feed(Buffer.from('{"name":"shell","stop":true,"toolUseId":"tu3"}'))
+
+    assert.equal(events.length, 1)
+    assert.equal(events[0].type, "tool_stop")
   })
 
   it("handles incremental chunks (incomplete JSON)", () => {
@@ -594,6 +684,18 @@ describe("buildKiroPayload with history truncation", () => {
     const history = payload.conversationState.history as unknown[]
     // Should have 2 entries: user("Hello") + assistant("Hi there")
     assert.equal(history.length, 2)
+  })
+
+  it("keeps the serialized payload below Kiro's safe request limit", () => {
+    const messages: Array<{ role: string; content: string }> = []
+    for (let i = 0; i < 400; i++) {
+      messages.push({ role: "user", content: `User message ${i} `.repeat(100) })
+      messages.push({ role: "assistant", content: `Assistant response ${i} `.repeat(100) })
+    }
+    messages.push({ role: "user", content: "Final message" })
+
+    const payload = buildKiroPayload("test-model", { messages }, undefined, undefined, 1000000)
+    assert.ok(Buffer.byteLength(JSON.stringify(payload), "utf8") <= 600000)
   })
 
   it("injects thinking mode into system prompt when model has reasoning", () => {

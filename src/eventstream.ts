@@ -199,6 +199,12 @@ export class AwsEventStreamParser {
         this.lastContent = undefined
         this.lastContentType = undefined
 
+        // Streamed tool calls end with { name, toolUseId, stop: true }.
+        // Treat that closing frame as a stop, not a second empty tool call.
+        if (data.stop === true && !("input" in data)) {
+          return { type: "tool_stop", stop: true }
+        }
+
         const input = data.input
         let inputStr: string
         if (typeof input === "object" && input !== null && !Array.isArray(input)) {

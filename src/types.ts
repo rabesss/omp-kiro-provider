@@ -98,7 +98,8 @@ export interface MessageLike {
 export interface ToolLike {
   name: string
   description: string
-  input_schema: Record<string, unknown>
+  parameters?: unknown
+  input_schema?: Record<string, unknown>
 }
 
 export interface ContextLike {

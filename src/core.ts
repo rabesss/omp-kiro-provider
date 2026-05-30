@@ -9,7 +9,7 @@
  * - Empty response detection with retry
  * - profileArn conditional omission for Builder ID
  * - Ban detection (TEMPORARILY_SUSPENDED) in HTTP errors AND stream content
- * - Buffered event emission — partial content never leaks on retry
+ * - Live event emission with retry buffering before the first visible delta
  */
 
 import { randomUUID } from "node:crypto"
@@ -120,6 +120,16 @@ function tryReadCliToken(): string | undefined {
     }
   } catch { /* kiro-cli DB unavailable */ }
   return undefined
+}
+
+/** Ask kiro-cli to resync its Builder ID session, then reread its token. */
+function resyncCliToken(): string | undefined {
+  try {
+    execSync("kiro-cli whoami", { stdio: "ignore", timeout: 15_000 })
+  } catch {
+    return undefined
+  }
+  return tryReadCliToken()
 }
 // ---------------------------------------------------------------------------
 // Dynamic profileArn resolution via ListAvailableProfiles (mikeyobrien/hongyilyu pattern)
@@ -329,9 +339,10 @@ export function createStreamKiro(deps: CoreDependencies) {
       let currentToolCall: { id: string; name: string; inputChunks: string[] } | undefined
       let thinkingParser: ThinkingTagParser | null = null
 
-      // Per-attempt event buffer — only flushed to stream on success
+      // Per-attempt staging buffer. Drain it as parsed events arrive so OMP
+      // renders live progress, but only retry while nothing visible has escaped.
       let eventBuffer: AssistantMessageEvent[] = []
-      let receivedContextUsage = false
+      let attemptEventsFlushed = false
       let emittedToolCalls = 0
       let sawAnyToolCalls = false
       let totalContentLength = 0
@@ -439,7 +450,6 @@ export function createStreamKiro(deps: CoreDependencies) {
             break
           }
           case "context_usage": {
-            receivedContextUsage = true
             contextUsagePercentage = event.percentage
             break
           }
@@ -456,7 +466,7 @@ export function createStreamKiro(deps: CoreDependencies) {
         currentToolCall = undefined
         thinkingParser = null
         eventBuffer = []
-        receivedContextUsage = false
+        attemptEventsFlushed = false
         emittedToolCalls = 0
         sawAnyToolCalls = false
         totalContentLength = 0
@@ -488,13 +498,13 @@ export function createStreamKiro(deps: CoreDependencies) {
 
       // --- Helper: flush buffered events to stream ---
       const flushBuffer = () => {
+        if (eventBuffer.length === 0) return
         for (const evt of eventBuffer) {
           stream.push(evt)
         }
         eventBuffer = []
+        attemptEventsFlushed = true
       }
-
-      let timeoutId: ReturnType<typeof setTimeout> | undefined
 
       try {
         // Resolve profileArn: only needed for Kiro social/OIDC sessions.
@@ -539,13 +549,6 @@ export function createStreamKiro(deps: CoreDependencies) {
           ...buildKiroHeaders(apiKey, isApiKey, isIdc),
           ...userHeaders,
         }
-
-        // Connection-level timeout
-        const timeoutController = new AbortController()
-        timeoutId = setTimeout(() => timeoutController.abort(), CONNECTION_TIMEOUT_MS)
-        const combinedSignal = options?.signal
-          ? AbortSignal.any([options.signal, timeoutController.signal])
-          : timeoutController.signal
 
         // ---- Outer retry loop: handles capacity + empty response + timeout retries ----
         const maxAttempts = 1 + MAX_CAPACITY_RETRIES + MAX_EMPTY_RETRIES
@@ -592,6 +595,7 @@ export function createStreamKiro(deps: CoreDependencies) {
 
           // ---- Inner retry loop: handles HTTP-level errors (429/5xx) ----
           let response: Response | undefined
+          let cliIdentityResynced = false
           for (let httpAttempt = 0; httpAttempt <= MAX_HTTP_RETRIES; httpAttempt++) {
             if (httpAttempt > 0) {
               const delay = Math.min(1000 * Math.pow(2, httpAttempt - 1), 10_000)
@@ -600,22 +604,38 @@ export function createStreamKiro(deps: CoreDependencies) {
             reqHeaders["amz-sdk-invocation-id"] = randomUUID()
             reqHeaders["amz-sdk-request"] = `attempt=${httpAttempt + 1}; max=${MAX_HTTP_RETRIES + 1}`
 
-            response = await raceAbort(
-              fetchImpl(`${apiBase}/generateAssistantResponse`, {
-                method: "POST",
-                headers: reqHeaders,
-                body: JSON.stringify(body),
-                signal: combinedSignal,
-              }),
-              controller.signal,
-            )
-            console.error(`[kiro-debug] HTTP ${response?.status} (attempt ${httpAttempt + 1})`)
-
+            const timeoutController = new AbortController()
+            const timeoutId = setTimeout(() => timeoutController.abort(), CONNECTION_TIMEOUT_MS)
+            const combinedSignal = options?.signal
+              ? AbortSignal.any([options.signal, timeoutController.signal])
+              : timeoutController.signal
+            try {
+              response = await raceAbort(
+                fetchImpl(`${apiBase}/generateAssistantResponse`, {
+                  method: "POST",
+                  headers: reqHeaders,
+                  body: JSON.stringify(body),
+                  signal: combinedSignal,
+                }),
+                controller.signal,
+              )
+            } finally {
+              clearTimeout(timeoutId)
+            }
             // Don't retry on ban detection; bust profileArn cache on 403
             if (response.status === 403) {
               profileArnCache.delete(`${apiBase}/generateAssistantResponse`)
               const peekBody = await response.clone().text().catch(() => "")
               if (peekBody.includes("TEMPORARILY_SUSPENDED")) break
+              if (!cliIdentityResynced && peekBody.includes("bearer token included in the request is invalid")) {
+                const refreshedCliToken = resyncCliToken()
+                if (refreshedCliToken) {
+                  apiKey = refreshedCliToken
+                  reqHeaders.Authorization = `Bearer ${apiKey}`
+                  cliIdentityResynced = true
+                  continue
+                }
+              }
             }
 
             // Retry on 429 and 5xx
@@ -683,23 +703,12 @@ export function createStreamKiro(deps: CoreDependencies) {
                 if (controller.signal.aborted) throw abortError("Aborted")
 
                 const events = parser.feed(value)
-                if (events.length === 0) {
-                  // Log raw bytes for debugging empty-event chunks
-                  console.error(`[kiro-debug] feed: 0 events from ${value?.length ?? 0} bytes, first 4 bytes: ${value?.slice(0, 4)?.toString?.("hex") ?? "n/a"}`)
-                }
-
                 for (const event of events) {
                   if (controller.signal.aborted) throw abortError("Aborted")
-
-                  // Log every parsed event type for debugging
-                  if (event.type !== "content") {
-                    console.error(`[kiro-debug] event: type=${event.type}`, event.type === "usage" ? `in=${event.inputTokens} out=${event.outputTokens}` : event.type === "context_usage" ? `pct=${event.percentage}` : event.type === "tool_start" ? `name=${event.name}` : "")
-                  }
 
                   // Check for INSUFFICIENT_MODEL_CAPACITY in content
                   if (event.type === "content" && event.content.includes("INSUFFICIENT_MODEL_CAPACITY")) {
                     capacityRetryable = true
-                    console.error("[kiro-debug] CAPACITY detected, will retry")
                     continue // skip — don't buffer capacity error
                   }
 
@@ -717,6 +726,7 @@ export function createStreamKiro(deps: CoreDependencies) {
                     handleEvent(event)
                   }
                 }
+                flushBuffer()
               } catch (err) {
                 clearTimeout(readTimeoutTimer)
                 if (err instanceof DOMException && err.name === "AbortError" && !controller.signal.aborted) {
@@ -747,9 +757,7 @@ export function createStreamKiro(deps: CoreDependencies) {
 
             // Empty response detection: got 200 but zero content events
             const hasContent = output.content.length > 0
-            console.error(`[kiro-debug] stream done: hasContent=${hasContent} contentBlocks=${output.content.length} attempt=${outerAttempt}/${maxAttempts} capacityRetryable=${capacityRetryable}`)
             if (!hasContent && outerAttempt < maxAttempts - 1) {
-              console.error(`[kiro-debug] empty response, retrying (attempt ${outerAttempt + 1})`)
               try { await reader?.cancel() } catch { /* ok */ }
               try { reader?.releaseLock() } catch { /* ok */ }
               reader = undefined
@@ -759,7 +767,6 @@ export function createStreamKiro(deps: CoreDependencies) {
 
             // Last attempt returned empty — error instead of silent empty response
             if (!hasContent) {
-              console.error("[kiro-debug] EMPTY RESPONSE after all retries — final error")
               throw new Error("Kiro returned an empty response after all retries")
             }
 
@@ -832,8 +839,9 @@ export function createStreamKiro(deps: CoreDependencies) {
             flushBuffer()
             break
           } catch (err) {
-            // Catch RetryableError from timeouts and continue outer loop
-            if (err instanceof RetryableError && outerAttempt < maxAttempts - 1) {
+            // Retry only before live deltas have escaped. Retrying after a
+            // visible partial response would duplicate content in the UI.
+            if (err instanceof RetryableError && !attemptEventsFlushed && outerAttempt < maxAttempts - 1) {
               try { await reader?.cancel() } catch { /* ok */ }
               try { reader?.releaseLock() } catch { /* ok */ }
               reader = undefined
@@ -857,12 +865,7 @@ export function createStreamKiro(deps: CoreDependencies) {
         }
         output.usage.output = usageOutputTokens ?? (totalContentLength > 0 ? Math.max(1, Math.floor(totalContentLength / 4)) : 0)
         output.usage.totalTokens = output.usage.input + output.usage.output
-        // Per pi-provider-kiro convention: "length" when no contextUsage AND no tool calls
-        if (!receivedContextUsage && emittedToolCalls === 0) {
-          output.stopReason = "length"
-        } else {
-          output.stopReason = emittedToolCalls > 0 ? "toolUse" : "stop"
-        }
+        output.stopReason = emittedToolCalls > 0 ? "toolUse" : "stop"
         stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output })
         stream.end()
       } catch (error: unknown) {
@@ -880,7 +883,6 @@ export function createStreamKiro(deps: CoreDependencies) {
         stream.push({ type: "error", reason, error: output })
         stream.end()
       } finally {
-        clearTimeout(timeoutId)
         cancelHiddenMarkerTimer()
         options?.signal?.removeEventListener("abort", abortUpstream)
         try { await reader?.cancel() } catch { /* may already be closed */ }
