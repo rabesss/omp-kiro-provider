@@ -216,7 +216,17 @@ export function createStreamKiro(deps: CoreDependencies) {
     const stream = deps.createStream()
 
     async function run() {
-      const apiKey = options?.apiKey
+      let apiKey = options?.apiKey
+
+      // OMP may pass the full JSON credential blob as apiKey instead of just the access token.
+      // Extract the access token if this is a JSON object.
+      if (apiKey && apiKey.startsWith("{")) {
+        try {
+          const parsed = JSON.parse(apiKey)
+          if (parsed.access) apiKey = parsed.access
+        } catch { /* not JSON — use as-is */ }
+      }
+      console.error(`[kiro-debug] apiKey present=${!!apiKey} length=${apiKey?.length} prefix=${apiKey?.slice(0, 30)}... isApiKey=${apiKey?.startsWith('ksk_')} startsWith_aoa=${apiKey?.startsWith('aoa')} startsWith_aor=${apiKey?.startsWith('aor')}`)
 
       if (!apiKey) {
         const msg: AssistantMessageLike = {
