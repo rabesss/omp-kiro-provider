@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { existsSync, readFileSync } from "node:fs"
+import { execSync } from "node:child_process"
 import type {
   AssistantMessageEvent,
   AssistantMessageEventStreamLike,
@@ -98,6 +99,27 @@ function headersToRecord(headers: Headers): Record<string, string> {
 /** Custom error for retryable stream-level failures. */
 class RetryableError extends Error {
   constructor(message: string) { super(message) }
+}
+
+/** Read fresh access token from kiro-cli's SQLite database. */
+function tryReadCliToken(): string | undefined {
+  try {
+    const db = join(homedir(), ".local", "share", "kiro-cli", "data.sqlite3")
+    if (!existsSync(db)) return undefined
+    const raw = execSync(
+      `sqlite3 ${JSON.stringify(db)} "SELECT value FROM auth_kv WHERE key='kirocli:odic:token' LIMIT 1"`,
+      { encoding: "utf-8", timeout: 3000 },
+    ).trim()
+    if (!raw) return undefined
+    const tok = JSON.parse(raw) as { access_token?: string; expires_at?: string | number }
+    if (tok.access_token) {
+      const expMs = typeof tok.expires_at === "string" ? new Date(tok.expires_at).getTime() : (tok.expires_at ?? 0) * 1000
+      if (!tok.expires_at || expMs > Date.now() + 60_000) {
+        return tok.access_token
+      }
+    }
+  } catch { /* kiro-cli DB unavailable */ }
+  return undefined
 }
 // ---------------------------------------------------------------------------
 // Dynamic profileArn resolution via ListAvailableProfiles (mikeyobrien/hongyilyu pattern)
@@ -217,14 +239,28 @@ export function createStreamKiro(deps: CoreDependencies) {
 
     async function run() {
       // OMP may pass the full JSON credential blob as apiKey instead of just the access token.
-      // Extract the access token if this is a JSON object.
+      // Extract the access token if this is a JSON object. Then check kiro-cli DB
+      // for a fresher token — kiro-cli refreshes its own tokens; the stored OMP
+      // credential may be stale.
       let apiKey = options?.apiKey
+      let storedExpires = 0
       if (apiKey && apiKey.startsWith("{")) {
         try {
           const parsed = JSON.parse(apiKey) as Record<string, unknown>
           if (typeof parsed.access === "string") apiKey = parsed.access
+          if (typeof parsed.expires === "number") storedExpires = parsed.expires
         } catch { /* not JSON — use as-is */ }
       }
+
+      // Try kiro-cli SQLite DB for a fresher token (kiro-cli manages its own refresh)
+      if (!apiKey || (storedExpires > 0 && storedExpires < Date.now() + 120_000)) {
+        const fresh = tryReadCliToken()
+        if (fresh) apiKey = fresh
+      }
+
+      // Environment variable fallback
+      if (!apiKey) apiKey = deps.env?.KIRO_API_KEY
+
 
 
       if (!apiKey) {
@@ -464,9 +500,9 @@ export function createStreamKiro(deps: CoreDependencies) {
         let profileArn: string | undefined
         if (metaRaw?.profileArn) {
           profileArn = metaRaw.profileArn
-        } else if (authMethod !== "idc" || metaRaw?.clientId) {
-          // Only try dynamic resolution for social auth or OIDC sessions with clientId
-          // (not bare Builder ID device code flow which lacks clientId in meta)
+        } else if (authMethod === "social") {
+          // Only resolve profileArn for social (Google/GitHub) auth.
+          // Builder ID / IDC tokens get 403 from ListAvailableProfiles.
           profileArn = await resolveProfileArn(apiKey, `${apiBase}/generateAssistantResponse`, fetchImpl)
         }
 
