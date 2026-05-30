@@ -216,17 +216,8 @@ export function createStreamKiro(deps: CoreDependencies) {
     const stream = deps.createStream()
 
     async function run() {
-      let apiKey = options?.apiKey
+      const apiKey = options?.apiKey
 
-      // OMP may pass the full JSON credential blob as apiKey instead of just the access token.
-      // Extract the access token if this is a JSON object.
-      if (apiKey && apiKey.startsWith("{")) {
-        try {
-          const parsed = JSON.parse(apiKey)
-          if (parsed.access) apiKey = parsed.access
-        } catch { /* not JSON — use as-is */ }
-      }
-      console.error(`[kiro-debug] apiKey present=${!!apiKey} length=${apiKey?.length} prefix=${apiKey?.slice(0, 30)}... isApiKey=${apiKey?.startsWith('ksk_')} startsWith_aoa=${apiKey?.startsWith('aoa')} startsWith_aor=${apiKey?.startsWith('aor')}`)
 
       if (!apiKey) {
         const msg: AssistantMessageLike = {
@@ -459,9 +450,17 @@ export function createStreamKiro(deps: CoreDependencies) {
       let timeoutId: ReturnType<typeof setTimeout> | undefined
 
       try {
-        // Resolve profileArn: try sidecar metadata first, then dynamic ListAvailableProfiles
-        const sidecarArn = authMethod === "social" ? metaRaw?.profileArn : undefined
-        const profileArn = sidecarArn ?? (await resolveProfileArn(apiKey, `${apiBase}/generateAssistantResponse`, fetchImpl))
+        // Resolve profileArn: only needed for Kiro social/OIDC sessions.
+        // Builder ID (device code flow) doesn't support profileArn or ListAvailableProfiles —
+        // including either causes a 403. Skip entirely when no profileArn in metadata.
+        let profileArn: string | undefined
+        if (metaRaw?.profileArn) {
+          profileArn = metaRaw.profileArn
+        } else if (authMethod !== "idc" || metaRaw?.clientId) {
+          // Only try dynamic resolution for social auth or OIDC sessions with clientId
+          // (not bare Builder ID device code flow which lacks clientId in meta)
+          profileArn = await resolveProfileArn(apiKey, `${apiBase}/generateAssistantResponse`, fetchImpl)
+        }
 
         // --- Thinking / reasoning mode ---
         // Inject <thinking_mode> into system prompt so the model produces <thinking> tags.
