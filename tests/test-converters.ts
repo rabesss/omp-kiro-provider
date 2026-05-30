@@ -95,7 +95,10 @@ describe("buildKiroPayload", () => {
     assert.ok(userCtx.tools)
     const tools = userCtx.tools as unknown[]
     assert.equal(tools.length, 1)
-    assert.equal((tools[0] as Record<string, unknown>).name, "read_file")
+    const spec = (tools[0] as Record<string, unknown>).toolSpecification as Record<string, unknown>
+    assert.equal(spec.name, "read_file")
+    assert.ok(spec.inputSchema)
+    assert.ok((spec.inputSchema as Record<string, unknown>).json)
   })
 
   it("truncates tool names > 64 chars", () => {
@@ -109,9 +112,10 @@ describe("buildKiroPayload", () => {
     const payload = buildKiroPayload("claude_sonnet_4_5", ctx)
     const current = payload.conversationState.currentMessage.userInputMessage as Record<string, unknown>
     const userCtx = current.userInputMessageContext as Record<string, unknown>
-    const tools = userCtx.tools as Array<Record<string, unknown>>
-
-    assert.equal(tools[0].name.length, 64)
+    const tools = userCtx.tools as unknown[]
+    assert.equal(tools.length, 1)
+    const spec = (tools[0] as Record<string, unknown>).toolSpecification as Record<string, unknown>
+    assert.equal(spec.name.length, 64)
   })
 
   it("includes profileArn when provided", () => {

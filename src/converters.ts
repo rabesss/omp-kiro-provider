@@ -92,9 +92,11 @@ function toolsToKiroFormat(tools?: readonly ToolLike[]): unknown[] | undefined {
   if (!tools || tools.length === 0) return undefined
 
   return tools.map((tool) => ({
-    name: truncateToolName(tool.name),
-    description: tool.description ?? "",
-    inputSchema: tool.input_schema,
+    toolSpecification: {
+      name: truncateToolName(tool.name),
+      description: tool.description ?? "",
+      inputSchema: { json: tool.input_schema as Record<string, unknown> },
+    },
   }))
 }
 
@@ -103,13 +105,14 @@ function toolsToKiroFormat(tools?: readonly ToolLike[]): unknown[] | undefined {
 // ---------------------------------------------------------------------------
 
 function toolResultsToKiroFormat(
-  results?: Array<{ toolCallId: string; content: string }>,
+  results?: Array<{ toolCallId: string; content: string; isError?: boolean }>,
 ): unknown[] | undefined {
   if (!results || results.length === 0) return undefined
 
   return results.map((r) => ({
     toolUseId: r.toolCallId,
-    content: r.content,
+    content: [{ text: r.content }],
+    status: r.isError ? "error" as const : "success" as const,
   }))
 }
 
