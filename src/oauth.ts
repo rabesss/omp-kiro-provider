@@ -7,7 +7,7 @@
  *
  * Auth sources (in preference order):
  * 1. kiro-cli SQLite database (preferred — always fresh, actively maintained)
- * 2. Kiro IDE ~/.aws/sso/cache/kiro-auth-token.json (fallback)
+ * 2. Kiro IDE ~/.aws/sso/cache/kiro-auth-token-cli.json or kiro-auth-token.json (fallback)
  * 3. API Key (ksk_xxx)
  * 4. OIDC device code flow (Builder ID browser login)
  */
@@ -193,48 +193,60 @@ function tryReadCliCredentials(): { creds: OMPCredentials; meta: KiroAuthMeta } 
 }
 
 // ---------------------------------------------------------------------------
-// Kiro IDE fallback (reads ~/.aws/sso/cache/kiro-auth-token.json)
+// Kiro IDE fallback (reads ~/.aws/sso/cache/kiro-auth-token*.json)
+// Tries kiro-auth-token-cli.json first (newer, from kiro-cli), then legacy file.
 // ---------------------------------------------------------------------------
 
+const IDE_TOKEN_FILES = [
+  "kiro-auth-token-cli.json",
+  "kiro-auth-token.json",
+]
+
 function tryReadIdeToken(): { creds: OMPCredentials; meta: KiroAuthMeta } | null {
-  const cachePath = join(homedir(), ".aws", "sso", "cache", "kiro-auth-token.json")
-  if (!existsSync(cachePath)) return null
+  const ssoDir = join(homedir(), ".aws", "sso", "cache")
 
-  try {
-    const raw = readFileSync(cachePath, "utf-8")
-    const data = JSON.parse(raw) as {
-      accessToken?: string
-      refreshToken?: string
-      expiresAt?: string | number
-      region?: string
-      profileArn?: string
-      clientId?: string
-      clientSecret?: string
+  for (const filename of IDE_TOKEN_FILES) {
+    const cachePath = join(ssoDir, filename)
+    if (!existsSync(cachePath)) continue
+
+    try {
+      const raw = readFileSync(cachePath, "utf-8")
+      const data = JSON.parse(raw) as {
+        accessToken?: string
+        refreshToken?: string
+        expiresAt?: string | number
+        region?: string
+        profileArn?: string
+        clientId?: string
+        clientSecret?: string
+      }
+
+      if (!data.accessToken && !data.refreshToken) continue
+
+      let expires: number
+      if (typeof data.expiresAt === "string") expires = new Date(data.expiresAt).getTime()
+      else if (typeof data.expiresAt === "number") expires = data.expiresAt
+      else expires = 0
+
+      const method = data.clientId ? "idc" : "social"
+      const meta: KiroAuthMeta = {
+        method,
+        region: data.region ?? DEFAULT_REGION,
+        profileArn: data.profileArn,
+        clientId: data.clientId,
+        clientSecret: data.clientSecret,
+      }
+
+      return {
+        creds: { access: data.accessToken ?? "", refresh: data.refreshToken ?? "", expires },
+        meta,
+      }
+    } catch {
+      continue
     }
-
-    if (!data.accessToken && !data.refreshToken) return null
-
-    let expires: number
-    if (typeof data.expiresAt === "string") expires = new Date(data.expiresAt).getTime()
-    else if (typeof data.expiresAt === "number") expires = data.expiresAt
-    else expires = 0
-
-    const method = data.clientId ? "idc" : "social"
-    const meta: KiroAuthMeta = {
-      method,
-      region: data.region ?? DEFAULT_REGION,
-      profileArn: data.profileArn,
-      clientId: data.clientId,
-      clientSecret: data.clientSecret,
-    }
-
-    return {
-      creds: { access: data.accessToken ?? "", refresh: data.refreshToken ?? "", expires },
-      meta,
-    }
-  } catch {
-    return null
   }
+
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -313,17 +325,20 @@ export async function login(callbacks: import("./types.ts").OAuthLoginCallbacks)
       const detected = tryAutoDetect()
       if (!detected) {
         const dbPath = join(homedir(), ".local", "share", "kiro-cli", "data.sqlite3")
-        const idePath = join(homedir(), ".aws", "sso", "cache", "kiro-auth-token.json")
+        const ssoDir = join(homedir(), ".aws", "sso", "cache")
         const details: string[] = []
         if (existsSync(dbPath)) {
           details.push(`kiro-cli DB exists at ${dbPath} but no valid token found (may need to run 'kiro' to log in)`)
         } else {
           details.push(`kiro-cli DB not found at ${dbPath}`)
         }
-        if (existsSync(idePath)) {
-          details.push(`Kiro IDE token exists at ${idePath} but could not be parsed`)
-        } else {
-          details.push(`Kiro IDE token not found at ${idePath}`)
+        for (const f of IDE_TOKEN_FILES) {
+          const p = join(ssoDir, f)
+          if (existsSync(p)) {
+            details.push(`Kiro token file ${f} exists but could not be parsed`)
+          } else {
+            details.push(`Kiro token file not found: ${f}`)
+          }
         }
         throw new Error(
           "No existing Kiro login found:\n" + details.map(d => `  - ${d}`).join("\n") +
