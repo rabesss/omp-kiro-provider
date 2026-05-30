@@ -216,7 +216,15 @@ export function createStreamKiro(deps: CoreDependencies) {
     const stream = deps.createStream()
 
     async function run() {
-      const apiKey = options?.apiKey
+      // OMP may pass the full JSON credential blob as apiKey instead of just the access token.
+      // Extract the access token if this is a JSON object.
+      let apiKey = options?.apiKey
+      if (apiKey && apiKey.startsWith("{")) {
+        try {
+          const parsed = JSON.parse(apiKey) as Record<string, unknown>
+          if (typeof parsed.access === "string") apiKey = parsed.access
+        } catch { /* not JSON — use as-is */ }
+      }
 
 
       if (!apiKey) {
