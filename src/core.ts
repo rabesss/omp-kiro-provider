@@ -238,24 +238,27 @@ export function createStreamKiro(deps: CoreDependencies) {
     const stream = deps.createStream()
 
     async function run() {
-      // OMP may pass the full JSON credential blob as apiKey instead of just the access token.
-      // Extract the access token if this is a JSON object. Then check kiro-cli DB
-      // for a fresher token — kiro-cli refreshes its own tokens; the stored OMP
-      // credential may be stale.
-      let apiKey = options?.apiKey
-      let storedExpires = 0
-      if (apiKey && apiKey.startsWith("{")) {
-        try {
-          const parsed = JSON.parse(apiKey) as Record<string, unknown>
-          if (typeof parsed.access === "string") apiKey = parsed.access
-          if (typeof parsed.expires === "number") storedExpires = parsed.expires
-        } catch { /* not JSON — use as-is */ }
-      }
+      // Credential resolution strategy:
+      // 1. kiro-cli SQLite DB (always fresh — kiro-cli manages its own token refresh)
+      // 2. options.apiKey from OMP (may be stale if OMP's refresh didn't fire)
+      //    - Could be a raw access token string (OMP called getApiKey first)
+      //    - Or the full JSON credential blob (OMP passed raw data)
+      // 3. KIRO_API_KEY env var
+      let apiKey: string | undefined
 
-      // Try kiro-cli SQLite DB for a fresher token (kiro-cli manages its own refresh)
-      if (!apiKey || (storedExpires > 0 && storedExpires < Date.now() + 120_000)) {
-        const fresh = tryReadCliToken()
-        if (fresh) apiKey = fresh
+      // Always try kiro-cli DB first — it has the freshest Builder ID token
+      const cliToken = tryReadCliToken()
+      if (cliToken) {
+        apiKey = cliToken
+      } else if (options?.apiKey) {
+        apiKey = options.apiKey
+        // Extract access token from JSON blob if OMP passed raw credentials
+        if (apiKey.startsWith("{")) {
+          try {
+            const parsed = JSON.parse(apiKey) as Record<string, unknown>
+            if (typeof parsed.access === "string") apiKey = parsed.access
+          } catch { /* not JSON — use as-is */ }
+        }
       }
 
       // Environment variable fallback
