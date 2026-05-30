@@ -1,0 +1,26 @@
+{
+  "name": "omp-kiro-provider",
+  "version": "0.1.0",
+  "description": "Dependency-free OMP extension for the Kiro API (kiro.dev)",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "omp-extension",
+    "kiro",
+    "provider"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/test-converters.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
