@@ -609,6 +609,7 @@ export function createStreamKiro(deps: CoreDependencies) {
               }),
               controller.signal,
             )
+            console.error(`[kiro-debug] HTTP ${response?.status} (attempt ${httpAttempt + 1})`)
 
             // Don't retry on ban detection; bust profileArn cache on 403
             if (response.status === 403) {
@@ -682,13 +683,23 @@ export function createStreamKiro(deps: CoreDependencies) {
                 if (controller.signal.aborted) throw abortError("Aborted")
 
                 const events = parser.feed(value)
+                if (events.length === 0) {
+                  // Log raw bytes for debugging empty-event chunks
+                  console.error(`[kiro-debug] feed: 0 events from ${value?.length ?? 0} bytes, first 4 bytes: ${value?.slice(0, 4)?.toString?.("hex") ?? "n/a"}`)
+                }
 
                 for (const event of events) {
                   if (controller.signal.aborted) throw abortError("Aborted")
 
+                  // Log every parsed event type for debugging
+                  if (event.type !== "content") {
+                    console.error(`[kiro-debug] event: type=${event.type}`, event.type === "usage" ? `in=${event.inputTokens} out=${event.outputTokens}` : event.type === "context_usage" ? `pct=${event.percentage}` : event.type === "tool_start" ? `name=${event.name}` : "")
+                  }
+
                   // Check for INSUFFICIENT_MODEL_CAPACITY in content
                   if (event.type === "content" && event.content.includes("INSUFFICIENT_MODEL_CAPACITY")) {
                     capacityRetryable = true
+                    console.error("[kiro-debug] CAPACITY detected, will retry")
                     continue // skip — don't buffer capacity error
                   }
 
@@ -736,7 +747,9 @@ export function createStreamKiro(deps: CoreDependencies) {
 
             // Empty response detection: got 200 but zero content events
             const hasContent = output.content.length > 0
+            console.error(`[kiro-debug] stream done: hasContent=${hasContent} contentBlocks=${output.content.length} attempt=${outerAttempt}/${maxAttempts} capacityRetryable=${capacityRetryable}`)
             if (!hasContent && outerAttempt < maxAttempts - 1) {
+              console.error(`[kiro-debug] empty response, retrying (attempt ${outerAttempt + 1})`)
               try { await reader?.cancel() } catch { /* ok */ }
               try { reader?.releaseLock() } catch { /* ok */ }
               reader = undefined
@@ -746,6 +759,7 @@ export function createStreamKiro(deps: CoreDependencies) {
 
             // Last attempt returned empty — error instead of silent empty response
             if (!hasContent) {
+              console.error("[kiro-debug] EMPTY RESPONSE after all retries — final error")
               throw new Error("Kiro returned an empty response after all retries")
             }
 
