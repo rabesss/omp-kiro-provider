@@ -14,8 +14,8 @@
 
 import { randomUUID } from "node:crypto"
 import { join } from "node:path"
-import { homedir } from "node:os"
-import { existsSync, readFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { execSync } from "node:child_process"
 import type {
   AssistantMessageEvent,
@@ -42,12 +42,18 @@ export * from "./types.ts"
 
 
 // Retry / timeout configuration
-const MAX_HTTP_RETRIES = 3           // 429 / 5xx retries
+const MAX_HTTP_RETRIES = 1           // transient 5xx retries; 429 is backpressure
 const MAX_CAPACITY_RETRIES = 3       // INSUFFICIENT_MODEL_CAPACITY retries
 const MAX_EMPTY_RETRIES = 2          // empty response retries
 const FIRST_TOKEN_TIMEOUT_MS = 180_000  // 3 minutes to get first content
 const IDLE_STREAM_TIMEOUT_MS = 300_000  // Match native kiro-cli's 5-minute operation timeout
 const CONNECTION_TIMEOUT_MS = 120_000    // 2 min for initial connection
+const KIRO_STREAM_GATE_POLL_MS = 500
+const KIRO_STREAM_GATE_HEARTBEAT_MS = 15_000
+const KIRO_STREAM_GATE_STALE_MS = 10 * 60_000
+const KIRO_STREAM_GATE_ROOT = join(tmpdir(), "omp-kiro-provider")
+const KIRO_STREAM_GATE_DIR = join(KIRO_STREAM_GATE_ROOT, "stream.lock")
+const KIRO_STREAM_GATE_OWNER = join(KIRO_STREAM_GATE_DIR, "owner.json")
 
 // Thinking / reasoning configuration
 const HIDDEN_REASONING_COUNTDOWN_MS = 2000  // ms before showing "reasoning hidden" marker
@@ -59,6 +65,39 @@ function thinkingBudget(level: boolean | string | undefined): number {
   if (level === "high") return 30000
   if (level === "medium") return 20000
   return 10000 // default / "low" / true
+}
+
+type ReasoningLevel = boolean | "off" | "low" | "medium" | "high" | "xhigh"
+
+function isReasoningLevel(value: unknown): value is ReasoningLevel {
+  return value === true || value === false || value === "off" || value === "low" || value === "medium" || value === "high" || value === "xhigh"
+}
+
+function readReasoningField(source: unknown, key: string): ReasoningLevel | undefined {
+  if (!source || typeof source !== "object") return undefined
+  const value = (source as Record<string, unknown>)[key]
+  return isReasoningLevel(value) ? value : undefined
+}
+
+export function shouldRetryHttpStatus(status: number): boolean {
+  if (status === 429) return false
+  return status >= 500
+}
+
+export function resolveReasoningLevel(model: Pick<ModelLike, "id" | "name">, options?: StreamOptions): ReasoningLevel | undefined {
+  const direct = readReasoningField(options, "reasoning")
+  if (direct !== undefined) return direct
+
+  const legacy = readReasoningField(options, "reasoningEffort")
+  if (legacy !== undefined) return legacy
+
+  const metadata = options && typeof options === "object" ? (options as Record<string, unknown>).metadata : undefined
+  const metadataReasoning = readReasoningField(metadata, "reasoning") ?? readReasoningField(metadata, "reasoningEffort")
+  if (metadataReasoning !== undefined) return metadataReasoning
+
+  const selector = `${model.id}:${model.name}`
+  const match = selector.match(/:(xhigh|high|medium|low|off)(?:\b|$)/)
+  return match ? (match[1] as Exclude<ReasoningLevel, boolean>) : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +279,60 @@ export function createStreamKiro(deps: CoreDependencies) {
     })
   }
 
+  async function acquireKiroStreamGate(signal: AbortSignal): Promise<() => void> {
+    const env = deps.env ?? process.env
+    if (env.OMP_KIRO_STREAM_GATE === "0" || env.KIRO_STREAM_GATE === "0") {
+      return () => {}
+    }
+
+    const token = `${process.pid}:${randomUUID()}`
+    const owner = {
+      token,
+      pid: process.pid,
+      cwd: cwd(),
+      startedAt: new Date().toISOString(),
+    }
+
+    for (;;) {
+      if (signal.aborted) throw abortError()
+      try {
+        mkdirSync(KIRO_STREAM_GATE_ROOT, { recursive: true })
+        mkdirSync(KIRO_STREAM_GATE_DIR)
+        const heartbeat = () => {
+          writeFileSync(KIRO_STREAM_GATE_OWNER, JSON.stringify({ ...owner, heartbeatAt: new Date().toISOString() }))
+        }
+        heartbeat()
+        const heartbeatTimer = setInterval(heartbeat, KIRO_STREAM_GATE_HEARTBEAT_MS)
+        return () => {
+          clearInterval(heartbeatTimer)
+          try {
+            const currentOwner = JSON.parse(readFileSync(KIRO_STREAM_GATE_OWNER, "utf-8")) as { token?: string }
+            if (currentOwner.token === token) {
+              rmSync(KIRO_STREAM_GATE_DIR, { recursive: true, force: true })
+            }
+          } catch { /* already released or replaced */ }
+        }
+      } catch (error: unknown) {
+        const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined
+        if (code !== "EEXIST") throw error
+
+        let stale = false
+        try {
+          const stat = statSync(KIRO_STREAM_GATE_OWNER)
+          stale = Date.now() - stat.mtimeMs > KIRO_STREAM_GATE_STALE_MS
+        } catch {
+          stale = true
+        }
+        if (stale) {
+          rmSync(KIRO_STREAM_GATE_DIR, { recursive: true, force: true })
+          continue
+        }
+
+        await sleep(KIRO_STREAM_GATE_POLL_MS + Math.floor(Math.random() * 250), signal)
+      }
+    }
+  }
+
   return function streamKiro(
     model: ModelLike,
     context: ContextLike,
@@ -307,6 +400,7 @@ export function createStreamKiro(deps: CoreDependencies) {
 
       const controller = new AbortController()
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+      let releaseKiroStreamGate: (() => void) | undefined
 
       // Detect auth method for header selection
       const isApiKey = apiKey.startsWith("ksk_")
@@ -522,8 +616,8 @@ export function createStreamKiro(deps: CoreDependencies) {
         // --- Thinking / reasoning mode ---
         // Inject <thinking_mode> into system prompt so the model produces <thinking> tags.
         // Skip for reasoningHidden models (server-side reasoning, no tags emitted).
-        const reasoningLevel = options?.reasoning
-        const thinkingEnabled = !!reasoningLevel || model.reasoning
+        const reasoningLevel = resolveReasoningLevel(model, options)
+        const thinkingEnabled = reasoningLevel === false || reasoningLevel === "off" ? false : !!reasoningLevel || model.reasoning
         const reasoningHidden = !!model.reasoningHidden
 
         let systemPromptOverride = context.systemPrompt
@@ -549,6 +643,8 @@ export function createStreamKiro(deps: CoreDependencies) {
           ...buildKiroHeaders(apiKey, isApiKey, isIdc),
           ...userHeaders,
         }
+
+        releaseKiroStreamGate = await acquireKiroStreamGate(controller.signal)
 
         // ---- Outer retry loop: handles capacity + empty response + timeout retries ----
         const maxAttempts = 1 + MAX_CAPACITY_RETRIES + MAX_EMPTY_RETRIES
@@ -638,8 +734,9 @@ export function createStreamKiro(deps: CoreDependencies) {
               }
             }
 
-            // Retry on 429 and 5xx
-            if (response.status === 429 || response.status >= 500) continue
+            // Retry only transient server errors. 429 means Kiro is applying
+            // account-level backpressure, so local immediate retries amplify it.
+            if (shouldRetryHttpStatus(response.status)) continue
             break
           }
           if (!response) throw new Error("No response from Kiro API after retries")
@@ -887,6 +984,7 @@ export function createStreamKiro(deps: CoreDependencies) {
         options?.signal?.removeEventListener("abort", abortUpstream)
         try { await reader?.cancel() } catch { /* may already be closed */ }
         try { reader?.releaseLock() } catch { /* may already be released */ }
+        releaseKiroStreamGate?.()
       }
     }
 

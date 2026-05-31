@@ -9,6 +9,7 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 
 import { buildKiroPayload } from "../src/converters.ts"
+import { resolveReasoningLevel, shouldRetryHttpStatus } from "../src/core.ts"
 import { AwsEventStreamParser } from "../src/eventstream.ts"
 import type { ContextLike, KiroEvent } from "../src/types.ts"
 
@@ -253,6 +254,62 @@ describe("buildKiroPayload", () => {
     const payload = buildKiroPayload("model", ctx)
     const current = payload.conversationState.currentMessage.userInputMessage as Record<string, unknown>
     assert.equal(current.content, "(empty placeholder)")
+  })
+})
+
+describe("resolveReasoningLevel", () => {
+  const model = {
+    id: "claude-opus-4-8",
+    name: "Claude Opus 4.8",
+  }
+
+  it("prefers direct provider reasoning over legacy and selector fallbacks", () => {
+    assert.equal(
+      resolveReasoningLevel(
+        { ...model, id: "claude-opus-4-8:xhigh" },
+        { reasoning: "medium", reasoningEffort: "xhigh" } as never,
+      ),
+      "medium",
+    )
+  })
+
+  it("accepts legacy reasoningEffort from older OMP extension shims", () => {
+    assert.equal(
+      resolveReasoningLevel(model, { reasoningEffort: "xhigh" } as never),
+      "xhigh",
+    )
+  })
+
+  it("accepts metadata reasoning fields when the shim nests request metadata", () => {
+    assert.equal(
+      resolveReasoningLevel(model, { metadata: { reasoningEffort: "high" } } as never),
+      "high",
+    )
+  })
+
+  it("falls back to a thinking suffix on the model selector", () => {
+    assert.equal(resolveReasoningLevel({ ...model, id: "claude-opus-4-8:xhigh" }), "xhigh")
+  })
+
+  it("preserves explicit reasoning off", () => {
+    assert.equal(resolveReasoningLevel({ ...model, id: "claude-opus-4-8:xhigh" }, { reasoning: false } as never), false)
+    assert.equal(resolveReasoningLevel({ ...model, id: "claude-opus-4-8:off" }), "off")
+  })
+})
+
+describe("shouldRetryHttpStatus", () => {
+  it("does not retry 429 rate-limit responses", () => {
+    assert.equal(shouldRetryHttpStatus(429), false)
+  })
+
+  it("retries transient 5xx responses", () => {
+    assert.equal(shouldRetryHttpStatus(500), true)
+    assert.equal(shouldRetryHttpStatus(503), true)
+  })
+
+  it("does not retry non-5xx client responses", () => {
+    assert.equal(shouldRetryHttpStatus(400), false)
+    assert.equal(shouldRetryHttpStatus(403), false)
   })
 })
 
