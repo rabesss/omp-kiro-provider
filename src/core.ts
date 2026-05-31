@@ -442,6 +442,9 @@ export function createStreamKiro(deps: CoreDependencies) {
       let totalContentLength = 0
       let usageInputTokens: number | undefined
       let usageOutputTokens: number | undefined
+      let usageCacheReadTokens: number | undefined
+      let usageCacheCreationTokens: number | undefined
+      let usageReasoningTokens: number | undefined
       let contextUsagePercentage = 0
 
       // Hidden reasoning state (hoisted for cleanup in error paths)
@@ -541,6 +544,9 @@ export function createStreamKiro(deps: CoreDependencies) {
           case "usage": {
             if (event.inputTokens !== undefined) usageInputTokens = event.inputTokens
             if (event.outputTokens !== undefined) usageOutputTokens = event.outputTokens
+            if (event.cacheReadTokens !== undefined) usageCacheReadTokens = event.cacheReadTokens
+            if (event.cacheCreationTokens !== undefined) usageCacheCreationTokens = event.cacheCreationTokens
+            if (event.reasoningTokens !== undefined) usageReasoningTokens = event.reasoningTokens
             break
           }
           case "context_usage": {
@@ -566,6 +572,9 @@ export function createStreamKiro(deps: CoreDependencies) {
         totalContentLength = 0
         usageInputTokens = undefined
         usageOutputTokens = undefined
+        usageCacheReadTokens = undefined
+        usageCacheCreationTokens = undefined
+        usageReasoningTokens = undefined
         contextUsagePercentage = 0
       }
 
@@ -961,7 +970,21 @@ export function createStreamKiro(deps: CoreDependencies) {
           output.usage.input = usageInputTokens
         }
         output.usage.output = usageOutputTokens ?? (totalContentLength > 0 ? Math.max(1, Math.floor(totalContentLength / 4)) : 0)
-        output.usage.totalTokens = output.usage.input + output.usage.output
+        if (usageCacheReadTokens !== undefined) {
+          output.usage.cacheRead = usageCacheReadTokens
+        }
+        if (usageCacheCreationTokens !== undefined) {
+          output.usage.cacheWrite = usageCacheCreationTokens
+        }
+        if (usageReasoningTokens !== undefined) {
+          output.usage.reasoning = usageReasoningTokens
+        }
+        output.usage.totalTokens =
+          output.usage.input +
+          output.usage.output +
+          output.usage.cacheRead +
+          output.usage.cacheWrite +
+          (output.usage.reasoning ?? 0)
         output.stopReason = emittedToolCalls > 0 ? "toolUse" : "stop"
         stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output })
         stream.end()

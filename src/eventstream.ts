@@ -38,6 +38,9 @@ export interface UsageEvent {
   type: "usage"
   inputTokens?: number
   outputTokens?: number
+  cacheReadTokens?: number
+  cacheCreationTokens?: number
+  reasoningTokens?: number
 }
 
 export interface ContextUsageEvent {
@@ -111,7 +114,11 @@ const EVENT_PATTERNS: ReadonlyArray<{ prefix: string; eventType: string }> = [
   { prefix: '{"content":', eventType: "content" },
   { prefix: '{"content": ', eventType: "content" },
   { prefix: '{"usage":', eventType: "usage" },
+  { prefix: '{"metricsEvent":', eventType: "usage" },
+  { prefix: '{"metrics":', eventType: "usage" },
+  { prefix: '{"usageEvent":', eventType: "usage" },
   { prefix: '{"contextUsagePercentage":', eventType: "context_usage" },
+  { prefix: '{"contextUsageEvent":', eventType: "context_usage" },
 ]
 
 // Maximum buffer size before discarding (10 MB)
@@ -242,18 +249,27 @@ export class AwsEventStreamParser {
         return { type: "tool_stop", stop: data.stop === true }
       }
       case "usage": {
-        const u = data.usage as Record<string, unknown> | undefined
+        const u =
+          asRecord(data.usage) ??
+          asRecord(data.metricsEvent) ??
+          asRecord(data.metrics) ??
+          asRecord(data.usageEvent) ??
+          data
         return {
           type: "usage",
-          inputTokens: typeof u?.inputTokens === "number" && Number.isFinite(u.inputTokens) ? u.inputTokens : undefined,
-          outputTokens: typeof u?.outputTokens === "number" && Number.isFinite(u.outputTokens) ? u.outputTokens : undefined,
+          inputTokens: finiteNumber(u.inputTokens ?? u.input_tokens ?? u.promptTokens ?? u.prompt_tokens),
+          outputTokens: finiteNumber(u.outputTokens ?? u.output_tokens ?? u.completionTokens ?? u.completion_tokens),
+          cacheReadTokens: finiteNumber(u.cacheReadTokens ?? u.cache_read_tokens ?? u.cacheReadInputTokens ?? u.cachedTokens),
+          cacheCreationTokens: finiteNumber(u.cacheCreationTokens ?? u.cache_write_tokens ?? u.cacheWriteTokens ?? u.cacheCreationInputTokens),
+          reasoningTokens: finiteNumber(u.reasoningTokens ?? u.reasoning_tokens ?? u.reasoningOutputTokens),
         }
       }
 
       case "context_usage": {
+        const nested = asRecord(data.contextUsageEvent)
         return {
           type: "context_usage",
-          percentage: Number(data.contextUsagePercentage ?? 0),
+          percentage: Number(data.contextUsagePercentage ?? nested?.contextUsagePercentage ?? 0),
         }
       }
 
@@ -268,4 +284,14 @@ export class AwsEventStreamParser {
     this.lastContent = undefined
     this.lastContentType = undefined
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }

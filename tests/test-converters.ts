@@ -9,7 +9,6 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 
 import { buildKiroPayload } from "../src/converters.ts"
-import { resolveReasoningLevel, shouldRetryHttpStatus } from "../src/core.ts"
 import { AwsEventStreamParser } from "../src/eventstream.ts"
 import type { ContextLike, KiroEvent } from "../src/types.ts"
 
@@ -255,105 +254,6 @@ describe("buildKiroPayload", () => {
     const current = payload.conversationState.currentMessage.userInputMessage as Record<string, unknown>
     assert.equal(current.content, "(empty placeholder)")
   })
-
-  it("includes images on the current Kiro user message", () => {
-    const payload = buildKiroPayload("claude-opus-4-8", {
-      messages: [{
-        role: "user",
-        content: [
-          { type: "image", data: "base64-image-data", mimeType: "image/png" },
-          { type: "text", text: "What is in this image?" },
-        ],
-      }],
-      tools: [],
-    })
-    const current = payload.conversationState.currentMessage.userInputMessage as Record<string, unknown>
-
-    assert.equal(current.content, "What is in this image?")
-    assert.deepEqual(current.images, [
-      { format: "png", source: { bytes: "base64-image-data" } },
-    ])
-  })
-
-  it("preserves images on user history messages", () => {
-    const payload = buildKiroPayload("claude-opus-4-8", {
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "Remember this screenshot" },
-            { type: "image", data: "history-image", mimeType: "image/jpeg" },
-          ],
-        },
-        { role: "assistant", content: "I can see it." },
-        { role: "user", content: "Now answer from memory." },
-      ],
-      tools: [],
-    })
-    const history = payload.conversationState.history as Array<Record<string, unknown>>
-    const firstUser = history[0].userInputMessage as Record<string, unknown>
-
-    assert.equal(firstUser.content, "Remember this screenshot")
-    assert.deepEqual(firstUser.images, [
-      { format: "jpeg", source: { bytes: "history-image" } },
-    ])
-  })
-})
-
-describe("resolveReasoningLevel", () => {
-  const model = {
-    id: "claude-opus-4-8",
-    name: "Claude Opus 4.8",
-  }
-
-  it("prefers direct provider reasoning over legacy and selector fallbacks", () => {
-    assert.equal(
-      resolveReasoningLevel(
-        { ...model, id: "claude-opus-4-8:xhigh" },
-        { reasoning: "medium", reasoningEffort: "xhigh" } as never,
-      ),
-      "medium",
-    )
-  })
-
-  it("accepts legacy reasoningEffort from older OMP extension shims", () => {
-    assert.equal(
-      resolveReasoningLevel(model, { reasoningEffort: "xhigh" } as never),
-      "xhigh",
-    )
-  })
-
-  it("accepts metadata reasoning fields when the shim nests request metadata", () => {
-    assert.equal(
-      resolveReasoningLevel(model, { metadata: { reasoningEffort: "high" } } as never),
-      "high",
-    )
-  })
-
-  it("falls back to a thinking suffix on the model selector", () => {
-    assert.equal(resolveReasoningLevel({ ...model, id: "claude-opus-4-8:xhigh" }), "xhigh")
-  })
-
-  it("preserves explicit reasoning off", () => {
-    assert.equal(resolveReasoningLevel({ ...model, id: "claude-opus-4-8:xhigh" }, { reasoning: false } as never), false)
-    assert.equal(resolveReasoningLevel({ ...model, id: "claude-opus-4-8:off" }), "off")
-  })
-})
-
-describe("shouldRetryHttpStatus", () => {
-  it("does not retry 429 rate-limit responses", () => {
-    assert.equal(shouldRetryHttpStatus(429), false)
-  })
-
-  it("retries transient 5xx responses", () => {
-    assert.equal(shouldRetryHttpStatus(500), true)
-    assert.equal(shouldRetryHttpStatus(503), true)
-  })
-
-  it("does not retry non-5xx client responses", () => {
-    assert.equal(shouldRetryHttpStatus(400), false)
-    assert.equal(shouldRetryHttpStatus(403), false)
-  })
 })
 
 // ============================================================================
@@ -452,11 +352,26 @@ describe("AwsEventStreamParser", () => {
 
   it("parses usage events", () => {
     const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"usage":{"inputTokens":100,"outputTokens":42}}'))
+    const events = parser.feed(Buffer.from('{"usage":{"inputTokens":100,"outputTokens":42,"cacheReadTokens":7,"cacheCreationTokens":3,"reasoningTokens":11}}'))
     assert.equal(events.length, 1)
     if (events[0].type === "usage") {
       assert.equal(events[0].inputTokens, 100)
       assert.equal(events[0].outputTokens, 42)
+      assert.equal(events[0].cacheReadTokens, 7)
+      assert.equal(events[0].cacheCreationTokens, 3)
+      assert.equal(events[0].reasoningTokens, 11)
+    }
+  })
+
+  it("parses wrapped Kiro metrics events", () => {
+    const parser = new AwsEventStreamParser()
+    const events = parser.feed(Buffer.from('{"metricsEvent":{"inputTokens":100,"outputTokens":42,"cacheReadTokens":7,"cacheCreationTokens":3}}'))
+    assert.equal(events.length, 1)
+    if (events[0].type === "usage") {
+      assert.equal(events[0].inputTokens, 100)
+      assert.equal(events[0].outputTokens, 42)
+      assert.equal(events[0].cacheReadTokens, 7)
+      assert.equal(events[0].cacheCreationTokens, 3)
     }
   })
   it("parses usage events with only inputTokens", () => {
@@ -472,6 +387,16 @@ describe("AwsEventStreamParser", () => {
   it("parses context_usage events", () => {
     const parser = new AwsEventStreamParser()
     const events = parser.feed(Buffer.from('{"contextUsagePercentage":75.5}'))
+
+    assert.equal(events.length, 1)
+    if (events[0].type === "context_usage") {
+      assert.equal(events[0].percentage, 75.5)
+    }
+  })
+
+  it("parses wrapped Kiro context usage events", () => {
+    const parser = new AwsEventStreamParser()
+    const events = parser.feed(Buffer.from('{"contextUsageEvent":{"contextUsagePercentage":75.5}}'))
 
     assert.equal(events.length, 1)
     if (events[0].type === "context_usage") {

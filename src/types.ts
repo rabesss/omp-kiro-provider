@@ -31,6 +31,7 @@ export interface Usage {
   output: number
   cacheRead: number
   cacheWrite: number
+  reasoning?: number
   totalTokens: number
   cost: UsageCost
 }
