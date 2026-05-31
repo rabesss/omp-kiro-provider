@@ -255,6 +255,49 @@ describe("buildKiroPayload", () => {
     const current = payload.conversationState.currentMessage.userInputMessage as Record<string, unknown>
     assert.equal(current.content, "(empty placeholder)")
   })
+
+  it("includes images on the current Kiro user message", () => {
+    const payload = buildKiroPayload("claude-opus-4-8", {
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", data: "base64-image-data", mimeType: "image/png" },
+          { type: "text", text: "What is in this image?" },
+        ],
+      }],
+      tools: [],
+    })
+    const current = payload.conversationState.currentMessage.userInputMessage as Record<string, unknown>
+
+    assert.equal(current.content, "What is in this image?")
+    assert.deepEqual(current.images, [
+      { format: "png", source: { bytes: "base64-image-data" } },
+    ])
+  })
+
+  it("preserves images on user history messages", () => {
+    const payload = buildKiroPayload("claude-opus-4-8", {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Remember this screenshot" },
+            { type: "image", data: "history-image", mimeType: "image/jpeg" },
+          ],
+        },
+        { role: "assistant", content: "I can see it." },
+        { role: "user", content: "Now answer from memory." },
+      ],
+      tools: [],
+    })
+    const history = payload.conversationState.history as Array<Record<string, unknown>>
+    const firstUser = history[0].userInputMessage as Record<string, unknown>
+
+    assert.equal(firstUser.content, "Remember this screenshot")
+    assert.deepEqual(firstUser.images, [
+      { format: "jpeg", source: { bytes: "history-image" } },
+    ])
+  })
 })
 
 describe("resolveReasoningLevel", () => {

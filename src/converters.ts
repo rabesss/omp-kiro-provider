@@ -6,7 +6,7 @@
  *     conversationState: {
  *       conversationId: "uuid",
  *       chatTriggerType: "MANUAL",
- *       currentMessage: { userInputMessage: { content, modelId, origin, userInputMessageContext? } },
+ *       currentMessage: { userInputMessage: { content, modelId, origin, images?, userInputMessageContext? } },
  *       history: [ { userInputMessage: {...} }, { assistantResponseMessage: {...} } ]
  *     },
  *     profileArn?: "arn:..."
@@ -22,7 +22,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import type { ContextLike, MessageLike, ToolLike, ToolCallContent } from "./types.ts"
+import type { ContextLike, ImageContent, MessageLike, ToolLike, ToolCallContent } from "./types.ts"
 
 // ---------------------------------------------------------------------------
 // Tool name truncation with reverse mapping
@@ -80,6 +80,27 @@ function textContent(content: unknown): string {
       .join("")
   }
   return String(content ?? "")
+}
+
+function imageContent(content: unknown): ImageContent[] {
+  if (!Array.isArray(content)) return []
+  return content
+    .filter((c): c is Record<string, unknown> => typeof c === "object" && c !== null)
+    .filter((c): c is Record<string, unknown> & ImageContent =>
+      c.type === "image" && typeof c.data === "string" && typeof c.mimeType === "string",
+    )
+}
+
+function imageFormat(mimeType: string): string {
+  return mimeType.split("/")[1]?.toLowerCase() || "png"
+}
+
+function imagesToKiroFormat(images: ImageContent[]): unknown[] | undefined {
+  if (images.length === 0) return undefined
+  return images.map((img) => ({
+    format: imageFormat(img.mimeType),
+    source: { bytes: img.data },
+  }))
 }
 
 function systemPromptText(prompt: ContextLike["systemPrompt"]): string {
@@ -384,7 +405,7 @@ function buildHistory(
   messages: MessageLike[],
   modelId: string,
   systemPrompt: string,
-): { history: unknown[]; currentContent: string; currentToolResults?: unknown[] } {
+): { history: unknown[]; currentContent: string; currentImages?: unknown[]; currentToolResults?: unknown[] } {
   if (messages.length === 0) {
     return { history: [], currentContent: systemPrompt || "(empty placeholder)" }
   }
@@ -415,6 +436,9 @@ function buildHistory(
         modelId,
         origin: "AI_EDITOR",
       }
+
+      const images = imagesToKiroFormat(imageContent(msg.content))
+      if (images) userMsg.images = images
 
       // Tool results go into userInputMessageContext
       const toolResults = toolResultsToKiroFormat(msg.toolResults)
@@ -450,11 +474,15 @@ function buildHistory(
 
   if (!currentContent) currentContent = "(empty placeholder)"
 
+  const currentImages = lastMessage.role === "user"
+    ? imagesToKiroFormat(imageContent(lastMessage.content))
+    : undefined
+
   const currentToolResults = lastMessage.role === "user"
     ? toolResultsToKiroFormat(lastMessage.toolResults)
     : undefined
 
-  return { history: normalized, currentContent, currentToolResults }
+  return { history: normalized, currentContent, currentImages, currentToolResults }
 }
 
 /**
@@ -549,7 +577,7 @@ export function buildKiroPayload(
   // Regex: only matches digit-dash-digit (version numbers), not general dashes.
   // Anchored to avoid false positives on things like "model-3-20250101".
   const kiroModelId = modelId.replace(/(\d)-(\d)(?!\d)/g, "$1.$2")
-  let { history, currentContent, currentToolResults } = buildHistory(
+  let { history, currentContent, currentImages, currentToolResults } = buildHistory(
     context.messages,
     kiroModelId,
     sysPrompt,
@@ -567,6 +595,7 @@ export function buildKiroPayload(
     modelId: kiroModelId,
     origin: "KIRO_CLI",
   }
+  if (currentImages) userInputMessage.images = currentImages
 
   // Add tools and tool results to userInputMessageContext
   const userCtx: Record<string, unknown> = {}

@@ -44,6 +44,12 @@ export interface TextContent {
   text: string
 }
 
+export interface ImageContent {
+  type: "image"
+  data: string
+  mimeType: string
+}
+
 export interface ThinkingContent {
   type: "thinking"
   thinking: string
@@ -90,7 +96,7 @@ export interface ModelLike {
 
 export interface MessageLike {
   role: "user" | "assistant"
-  content: string
+  content: string | Array<TextContent | ImageContent>
   toolCalls?: ToolCallContent[]
   toolResults?: Array<{ toolCallId: string; content: string }>
 }
