@@ -154,7 +154,7 @@ describe("buildKiroPayload", () => {
     assert.ok(!("required" in nested))
   })
 
-  it("moves overlong tool descriptions into the prompt", () => {
+  it("truncates overlong tool descriptions without contaminating the user prompt", () => {
     const longDescription = "A".repeat(10001)
     const payload = buildKiroPayload("model", {
       messages: [{ role: "user", content: "test" }],
@@ -165,8 +165,9 @@ describe("buildKiroPayload", () => {
     const tools = userCtx.tools as Array<Record<string, unknown>>
     const spec = tools[0].toolSpecification as Record<string, unknown>
 
-    assert.equal(spec.description, "[Full documentation in prompt under '## Tool: documented_tool']")
-    assert.ok(String(current.content).includes(`## Tool: documented_tool\n\n${longDescription}`))
+    assert.equal(String(spec.description).length, 10000)
+    assert.ok(String(spec.description).endsWith("[Description truncated to fit Kiro tool metadata limit]"))
+    assert.equal(current.content, "test")
   })
 
   it("converts OMP-native tool parameters into JSON Schema", () => {

@@ -5,7 +5,7 @@
  * - AWS Event Stream binary response decoding
  * - 429/5xx retry with exponential backoff
  * - INSUFFICIENT_MODEL_CAPACITY inner retry (common on free tier)
- * - First-token timeout (180s) + idle stream timeout (90s)
+ * - First-token timeout (180s) + idle stream timeout (300s)
  * - Empty response detection with retry
  * - profileArn conditional omission for Builder ID
  * - Ban detection (TEMPORARILY_SUSPENDED) in HTTP errors AND stream content
@@ -46,7 +46,7 @@ const MAX_HTTP_RETRIES = 3           // 429 / 5xx retries
 const MAX_CAPACITY_RETRIES = 3       // INSUFFICIENT_MODEL_CAPACITY retries
 const MAX_EMPTY_RETRIES = 2          // empty response retries
 const FIRST_TOKEN_TIMEOUT_MS = 180_000  // 3 minutes to get first content
-const IDLE_STREAM_TIMEOUT_MS = 90_000   // 90s between content events
+const IDLE_STREAM_TIMEOUT_MS = 300_000  // Match native kiro-cli's 5-minute operation timeout
 const CONNECTION_TIMEOUT_MS = 120_000    // 2 min for initial connection
 
 // Thinking / reasoning configuration

@@ -92,16 +92,15 @@ function systemPromptText(prompt: ContextLike["systemPrompt"]): string {
 
 function toolsToKiroFormat(
   tools?: readonly ToolLike[],
-): { tools?: unknown[]; documentation?: string } {
+): { tools?: unknown[] } {
   if (!tools || tools.length === 0) return {}
 
-  const documentation: string[] = []
   const converted = tools.map((tool) => {
     const name = truncateToolName(tool.name)
     let description = tool.description?.trim() || `Tool: ${tool.name}`
     if (description.length > KIRO_MAX_TOOL_DESCRIPTION) {
-      documentation.push(`## Tool: ${name}\n\n${description}`)
-      description = `[Full documentation in prompt under '## Tool: ${name}']`
+      const suffix = "\n\n[Description truncated to fit Kiro tool metadata limit]"
+      description = description.slice(0, KIRO_MAX_TOOL_DESCRIPTION - suffix.length) + suffix
     }
 
     return {
@@ -117,12 +116,7 @@ function toolsToKiroFormat(
     }
   })
 
-  return {
-    tools: converted,
-    documentation: documentation.length > 0
-      ? `# Tool Documentation\n\n${documentation.join("\n\n---\n\n")}`
-      : undefined,
-  }
+  return { tools: converted }
 }
 
 /**
@@ -576,10 +570,7 @@ export function buildKiroPayload(
 
   // Add tools and tool results to userInputMessageContext
   const userCtx: Record<string, unknown> = {}
-  const { tools: kiroTools, documentation } = toolsToKiroFormat(context.tools)
-  if (documentation) {
-    userInputMessage.content = `${userInputMessage.content}\n\n---\n${documentation}`
-  }
+  const { tools: kiroTools } = toolsToKiroFormat(context.tools)
   if (kiroTools) userCtx.tools = kiroTools
   if (currentToolResults) userCtx.toolResults = currentToolResults
   if (Object.keys(userCtx).length > 0) {
