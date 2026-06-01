@@ -10,8 +10,17 @@
     "provider"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rabesss/omp-kiro-provider.git"
+  },
+  "homepage": "https://github.com/rabesss/omp-kiro-provider#readme",
+  "bugs": {
+    "url": "https://github.com/rabesss/omp-kiro-provider/issues"
+  },
   "scripts": {
-    "test": "node --test tests/test-converters.ts"
+    "test": "node --test tests/test-converters.ts",
+    "test:unit": "node --test tests/test-converters.ts"
   },
   "pi": {
     "extensions": [
