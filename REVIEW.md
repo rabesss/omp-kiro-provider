@@ -21,4 +21,4 @@ Canonical PR review guide for this repository. Human reviewers follow the same r
 ## Agent-Maintained Review Memory
 Agents that open or update PRs in this repository must keep this section current when review history shows a repeated pattern. Add dated bullets only for durable repo-specific lessons, not one-off PR commentary.
 
-- No recurring repo-specific review patterns have been recorded yet.
+- 2026-07-05: Pullfrog GLM 5.2 config must stay isolated at `.github/pullfrog-opencode.json`. Do not reintroduce repo-root `opencode.json` for Pullfrog; Kilo Code Reviews may load it and fail model resolution.
