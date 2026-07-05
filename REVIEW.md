@@ -17,3 +17,8 @@ Canonical PR review guide for this repository. Human reviewers follow the same r
 - **Critical:** credential leaks, auth bypass, data loss, broken security boundaries.
 - **Warning:** missing validation, untested behavior changes, contract breaks.
 - **Do not flag:** formatting-only diffs, dependency version pins managed deliberately, speculative refactors outside PR scope.
+
+## Agent-Maintained Review Memory
+Agents that open or update PRs in this repository must keep this section current when review history shows a repeated pattern. Add dated bullets only for durable repo-specific lessons, not one-off PR commentary.
+
+- No recurring repo-specific review patterns have been recorded yet.
