@@ -1,52 +1,38 @@
-import { readCachedModelsSync } from "./model-cache.ts"
-import {
-  filterModelsByRegion,
-  staticKiroModels,
-  toProviderModel,
-  type KiroModelDef,
-} from "./model-catalog.ts"
-import type { ModelLike } from "./types.ts"
+import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 
-export {
-  MODEL_CACHE_PATH,
-  MODEL_CACHE_TTL_MS,
-  MODEL_DISCOVERY_TIMEOUT_MS,
-  refreshKiroModelsCache,
-  type RefreshKiroModelsOptions,
-} from "./model-cache.ts"
+export interface ModelDef {
+  id: string
+  name: string
+  reasoning: boolean
+  reasoningHidden?: boolean
+  input: ("text" | "image")[]
+  contextWindow: number
+  maxTokens: number
+}
 
-export {
-  DEFAULT_REGION,
-  apiRegionFromBase,
-  defaultApiBase,
-  filterModelsByRegion,
-  inferModelDefinition,
-  mergeDiscoveredModels,
-  parseDiscoveredModels,
-  resolveApiRegion,
-  serviceUrl,
-  staticKiroModels,
-  titleizeModelId,
-  toKiroApiModelId,
-  toProviderModel,
-  toProviderModelId,
-  validateModelCatalog,
-  type DiscoveredModel,
-  type DiscoveredModelsPage,
-  type InputModality,
-  type KiroModelDef,
-  type ThinkingLevelKey,
-  type ThinkingLevelMap,
-} from "./model-catalog.ts"
+const MODELS_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "models.json")
+const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
-export function loadRegisteredModels(options: {
-  region: string
-  apiBase: string
-  now?: number
-  cachePath?: string
-}): ModelLike[] {
-  const now = options.now ?? Date.now()
-  const cached = readCachedModelsSync(options.region, now, options.cachePath)
-  const source: KiroModelDef[] = cached ?? filterModelsByRegion(staticKiroModels, options.region)
-  return source.map((model) => toProviderModel(model, options.apiBase))
+export function loadModels(): Array<ModelDef & { cost: typeof ZERO_COST }> {
+  const parsed = JSON.parse(readFileSync(MODELS_PATH, "utf-8")) as { models?: unknown }
+  if (!Array.isArray(parsed.models)) throw new Error("models.json must contain a models array")
+
+  const ids = new Set<string>()
+  return parsed.models.map((value, index) => {
+    const model = value as Partial<ModelDef>
+    if (!model.id || !model.name || typeof model.reasoning !== "boolean") {
+      throw new Error(`models.json model ${index} is missing required metadata`)
+    }
+    if (!Array.isArray(model.input) || !model.input.every((item) => item === "text" || item === "image")) {
+      throw new Error(`models.json model ${model.id} has invalid input modalities`)
+    }
+    if (!Number.isInteger(model.contextWindow) || !Number.isInteger(model.maxTokens) || model.contextWindow! <= 0 || model.maxTokens! <= 0) {
+      throw new Error(`models.json model ${model.id} has invalid token limits`)
+    }
+    if (ids.has(model.id)) throw new Error(`models.json contains duplicate id: ${model.id}`)
+    ids.add(model.id)
+    return { ...(model as ModelDef), cost: ZERO_COST }
+  })
 }

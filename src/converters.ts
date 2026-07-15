@@ -23,7 +23,6 @@
 
 import { randomUUID } from "node:crypto"
 import type { ContextLike, ImageContent, MessageLike, ToolLike, ToolCallContent } from "./types.ts"
-import { toKiroApiModelId } from "./models.ts"
 
 // ---------------------------------------------------------------------------
 // Tool name truncation with reverse mapping
@@ -574,7 +573,8 @@ export function buildKiroPayload(
   clearTruncationMap()
 
   const sysPrompt = systemPromptText(context.systemPrompt)
-  const kiroModelId = toKiroApiModelId(modelId)
+  // OMP selectors use dash-form versions; Kiro's API expects dot-form.
+  const kiroModelId = modelId.replace(/(\d)-(\d)(?!\d)/g, "$1.$2")
   let { history, currentContent, currentImages, currentToolResults } = buildHistory(
     context.messages,
     kiroModelId,

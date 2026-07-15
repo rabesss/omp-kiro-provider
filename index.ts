@@ -17,7 +17,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent"
 
 import { createStreamKiro } from "./src/core.ts"
-import { DEFAULT_REGION, defaultApiBase, loadRegisteredModels, resolveApiRegion } from "./src/models.ts"
+import { loadModels } from "./src/models.ts"
 import { getApiKey, login, refreshToken } from "./src/oauth.ts"
 import { calculateCost, createAssistantMessageEventStream } from "./src/runtime.ts"
 
@@ -25,10 +25,11 @@ import { calculateCost, createAssistantMessageEventStream } from "./src/runtime.
 // Configuration
 // ---------------------------------------------------------------------------
 
-const region = resolveApiRegion(process.env.KIRO_REGION ?? DEFAULT_REGION)
-const DEFAULT_API_BASE = defaultApiBase(region)
+const DEFAULT_REGION = "us-east-1"
+const region = process.env.KIRO_REGION ?? DEFAULT_REGION
+const DEFAULT_API_BASE = `https://q.${region}.amazonaws.com`
 const API_BASE = process.env.KIRO_API_BASE ?? DEFAULT_API_BASE
-const MODELS = loadRegisteredModels({ region, apiBase: API_BASE })
+const MODELS = loadModels()
 
 // ---------------------------------------------------------------------------
 // Stream factory
@@ -57,8 +58,8 @@ export default function (pi: ExtensionAPI) {
     baseUrl: API_BASE,
     apiKey: "KIRO_API_KEY",
     authHeader: true,
-    api: "kiro-custom" as never, // custom API type — OMP doesn't validate this
-    streamSimple: streamKiro as never, // types diverge between internal/OMP; runtime contract matches
+    api: "kiro-custom",
+    streamSimple: streamKiro,
     oauth: {
       name: "Kiro",
       login,
@@ -66,5 +67,5 @@ export default function (pi: ExtensionAPI) {
       getApiKey,
     },
     models: MODELS,
-  })
+  } as never) // The extension package does not expose custom provider API types.
 }

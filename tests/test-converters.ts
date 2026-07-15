@@ -39,6 +39,16 @@ describe("buildKiroPayload", () => {
     assert.equal(userInput.origin, "KIRO_CLI")
   })
 
+  it("converts new dotted Kiro model versions without changing suffixes", () => {
+    const ctx: ContextLike = { messages: [{ role: "user", content: "Hello" }], tools: [] }
+
+    const gpt = buildKiroPayload("gpt-5-6-sol", ctx)
+    const claude = buildKiroPayload("claude-sonnet-4-6-1m", ctx)
+
+    assert.equal(gpt.conversationState.currentMessage.userInputMessage.modelId, "gpt-5.6-sol")
+    assert.equal(claude.conversationState.currentMessage.userInputMessage.modelId, "claude-sonnet-4.6-1m")
+  })
+
   it("builds multi-turn payload with history", () => {
     const ctx: ContextLike = {
       systemPrompt: "System prompt",

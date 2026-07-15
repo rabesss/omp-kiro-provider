@@ -17,8 +17,7 @@ This is an unofficial, community-maintained provider. It is not affiliated with,
 - AWS Event Stream response decoding.
 - Streaming text, reasoning/thinking markers, and tool-call conversion.
 - Retry handling for transient capacity errors, empty responses, and selected 5xx failures.
-- Validated static model catalog plus best-effort dynamic Kiro model discovery cache.
-- Region-aware model filtering and per-model reasoning level maps.
+- Validated, reviewable static model catalog.
 - Basic cost metadata set to zero because Kiro trial/subscription usage is not billed through OMP.
 - Unit tests for converters, event-stream parsing, and model catalog invariants.
 
@@ -96,7 +95,7 @@ Do not use `--provider kiro`; OMP resolves extension-defined providers through q
 
 ## Models
 
-Model metadata is committed in `models.json`. It includes context windows, max-token limits, reasoning flags, text/image capability flags, and optional per-model reasoning-level maps. The registry currently includes selectors such as:
+Model metadata is committed in `models.json`. It includes context windows, max-token limits, reasoning flags, and text/image capability flags. The registry currently includes selectors such as:
 
 - `kiro/auto`
 - `kiro/claude-sonnet-4-5`
@@ -113,11 +112,7 @@ Model metadata is committed in `models.json`. It includes context windows, max-t
 - `kiro/gpt-5-6-terra`
 - `kiro/gpt-5-6-luna`
 
-At startup the provider registers the committed static catalog, or a fresh dynamic cache if one exists at `~/.cache/omp-kiro-provider/models.json`. During live authenticated requests it best-effort calls Kiro's paginated `ListAvailableModels` endpoint and refreshes that cache for the active region. Requests are deduplicated in memory, bounded by a 10-second timeout, and persisted with an atomic replacement.
-
-Live results are authoritative for availability and for metadata Kiro supplies, including display names, input modalities, and token limits. Static entries enrich known models and remain the fallback when discovery is unavailable; the static region allowlist is never applied to a successful live response. This lets genuinely new Kiro models survive discovery without giving up reviewed defaults for incomplete API descriptors.
-
-When Kiro changes its live model list, prefer adding or verifying the model through the dynamic discovery path. Update `models.json` only for a reviewed static fallback change, and run the test suite before merging. The model tests intentionally fail on missing IDs, duplicate IDs, invalid modalities, invalid reasoning maps, and non-positive token limits.
+The provider validates and registers this catalog at startup. When Kiro changes its model list, update `models.json` in a normal reviewable PR and run the test suite before merging. Keeping availability and capabilities explicit avoids guessing metadata for models the provider has not verified.
 
 ## Development
 
@@ -134,9 +129,7 @@ Useful files:
 omp-kiro-provider/
 ├── index.ts                 # OMP extension entry point
 ├── models.json              # committed model registry
-├── src/models.ts            # model registration facade
-├── src/model-catalog.ts     # validation, static fallback, live metadata enrichment
-├── src/model-cache.ts       # bounded discovery, memory/disk cache, atomic persistence
+├── src/models.ts            # small filesystem loader and catalog validation
 ├── src/core.ts              # streaming, retries, headers, token selection
 ├── src/converters.ts        # OMP message/tool payload conversion
 ├── src/eventstream.ts       # AWS Event Stream parser
