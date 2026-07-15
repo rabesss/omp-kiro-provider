@@ -16,7 +16,7 @@
       "name": "Claude Opus 4.8",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": "disabled",
+        "off": "off",
         "minimal": "low",
         "low": "low",
         "medium": "medium",
@@ -38,7 +38,7 @@
       "reasoning": true,
       "reasoningHidden": true,
       "thinkingLevelMap": {
-        "off": "disabled",
+        "off": "off",
         "minimal": "low",
         "low": "low",
         "medium": "medium",
@@ -59,7 +59,7 @@
       "name": "Claude Opus 4.6",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": "disabled",
+        "off": "off",
         "minimal": "low",
         "low": "low",
         "medium": "medium",
@@ -79,7 +79,7 @@
       "name": "Claude Opus 4.6 (1M)",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": "disabled",
+        "off": "off",
         "minimal": "low",
         "low": "low",
         "medium": "medium",
@@ -110,7 +110,7 @@
       "name": "Claude Sonnet 5",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": "disabled",
+        "off": "off",
         "minimal": "low",
         "low": "low",
         "medium": "medium",
@@ -131,7 +131,7 @@
       "name": "Claude Sonnet 4.6",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": "disabled",
+        "off": "off",
         "minimal": "low",
         "low": "low",
         "medium": "medium",
@@ -151,7 +151,7 @@
       "name": "Claude Sonnet 4.6 (1M)",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": "disabled",
+        "off": "off",
         "minimal": "low",
         "low": "low",
         "medium": "medium",

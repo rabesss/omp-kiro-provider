@@ -113,7 +113,9 @@ Model metadata is committed in `models.json`. It includes context windows, max-t
 - `kiro/gpt-5-6-terra`
 - `kiro/gpt-5-6-luna`
 
-At startup the provider registers the committed static catalog, or a fresh dynamic cache if one exists at `~/.cache/omp-kiro-provider/models.json`. During live authenticated requests it best-effort calls Kiro's `ListAvailableModels` endpoint and refreshes that cache for the active region. If Kiro denies discovery, the cache is malformed, or the cache is stale, the committed static catalog remains the fallback.
+At startup the provider registers the committed static catalog, or a fresh dynamic cache if one exists at `~/.cache/omp-kiro-provider/models.json`. During live authenticated requests it best-effort calls Kiro's paginated `ListAvailableModels` endpoint and refreshes that cache for the active region. Requests are deduplicated in memory, bounded by a 10-second timeout, and persisted with an atomic replacement.
+
+Live results are authoritative for availability and for metadata Kiro supplies, including display names, input modalities, and token limits. Static entries enrich known models and remain the fallback when discovery is unavailable; the static region allowlist is never applied to a successful live response. This lets genuinely new Kiro models survive discovery without giving up reviewed defaults for incomplete API descriptors.
 
 When Kiro changes its live model list, prefer adding or verifying the model through the dynamic discovery path. Update `models.json` only for a reviewed static fallback change, and run the test suite before merging. The model tests intentionally fail on missing IDs, duplicate IDs, invalid modalities, invalid reasoning maps, and non-positive token limits.
 
@@ -132,7 +134,9 @@ Useful files:
 omp-kiro-provider/
 ├── index.ts                 # OMP extension entry point
 ├── models.json              # committed model registry
-├── src/models.ts            # model validation, region filtering, discovery cache
+├── src/models.ts            # model registration facade
+├── src/model-catalog.ts     # validation, static fallback, live metadata enrichment
+├── src/model-cache.ts       # bounded discovery, memory/disk cache, atomic persistence
 ├── src/core.ts              # streaming, retries, headers, token selection
 ├── src/converters.ts        # OMP message/tool payload conversion
 ├── src/eventstream.ts       # AWS Event Stream parser
