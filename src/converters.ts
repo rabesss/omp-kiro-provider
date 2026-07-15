@@ -23,6 +23,7 @@
 
 import { randomUUID } from "node:crypto"
 import type { ContextLike, ImageContent, MessageLike, ToolLike, ToolCallContent } from "./types.ts"
+import { toKiroApiModelId } from "./models.ts"
 
 // ---------------------------------------------------------------------------
 // Tool name truncation with reverse mapping
@@ -573,10 +574,7 @@ export function buildKiroPayload(
   clearTruncationMap()
 
   const sysPrompt = systemPromptText(context.systemPrompt)
-  // Convert pi dash-form (claude-sonnet-4-5) to Kiro dot-form (claude-sonnet-4.5)
-  // Regex: only matches digit-dash-digit (version numbers), not general dashes.
-  // Anchored to avoid false positives on things like "model-3-20250101".
-  const kiroModelId = modelId.replace(/(\d)-(\d)(?!\d)/g, "$1.$2")
+  const kiroModelId = toKiroApiModelId(modelId)
   let { history, currentContent, currentImages, currentToolResults } = buildHistory(
     context.messages,
     kiroModelId,

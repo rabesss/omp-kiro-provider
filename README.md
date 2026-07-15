@@ -17,8 +17,10 @@ This is an unofficial, community-maintained provider. It is not affiliated with,
 - AWS Event Stream response decoding.
 - Streaming text, reasoning/thinking markers, and tool-call conversion.
 - Retry handling for transient capacity errors, empty responses, and selected 5xx failures.
+- Validated static model catalog plus best-effort dynamic Kiro model discovery cache.
+- Region-aware model filtering and per-model reasoning level maps.
 - Basic cost metadata set to zero because Kiro trial/subscription usage is not billed through OMP.
-- Unit tests for converters and event-stream parsing.
+- Unit tests for converters, event-stream parsing, and model catalog invariants.
 
 ## Install
 
@@ -94,16 +96,26 @@ Do not use `--provider kiro`; OMP resolves extension-defined providers through q
 
 ## Models
 
-Model metadata is committed in `models.json`. It includes context windows, max-token limits, reasoning flags, and text/image capability flags. The registry currently includes selectors such as:
+Model metadata is committed in `models.json`. It includes context windows, max-token limits, reasoning flags, text/image capability flags, and optional per-model reasoning-level maps. The registry currently includes selectors such as:
 
 - `kiro/auto`
 - `kiro/claude-sonnet-4-5`
 - `kiro/claude-sonnet-4-6`
-- `kiro/claude-opus-4-7`
+- `kiro/claude-sonnet-5`
+- `kiro/claude-opus-4-5`
+- `kiro/claude-opus-4-8`
+- `kiro/kimi-k2-5`
 - `kiro/qwen3-coder-next`
+- `kiro/qwen3-coder-480b`
 - `kiro/minimax-m2-5`
+- `kiro/agi-nova-beta-1m`
+- `kiro/gpt-5-6-sol`
+- `kiro/gpt-5-6-terra`
+- `kiro/gpt-5-6-luna`
 
-When Kiro changes its live model list, update `models.json` in a normal reviewable PR and run the test suite before merging.
+At startup the provider registers the committed static catalog, or a fresh dynamic cache if one exists at `~/.cache/omp-kiro-provider/models.json`. During live authenticated requests it best-effort calls Kiro's `ListAvailableModels` endpoint and refreshes that cache for the active region. If Kiro denies discovery, the cache is malformed, or the cache is stale, the committed static catalog remains the fallback.
+
+When Kiro changes its live model list, prefer adding or verifying the model through the dynamic discovery path. Update `models.json` only for a reviewed static fallback change, and run the test suite before merging. The model tests intentionally fail on missing IDs, duplicate IDs, invalid modalities, invalid reasoning maps, and non-positive token limits.
 
 ## Development
 
@@ -111,7 +123,7 @@ No package-manager install is required for normal use. Contributors can run test
 
 ```sh
 node --version
-node --test tests/test-converters.ts
+npm test
 ```
 
 Useful files:
@@ -120,6 +132,7 @@ Useful files:
 omp-kiro-provider/
 ├── index.ts                 # OMP extension entry point
 ├── models.json              # committed model registry
+├── src/models.ts            # model validation, region filtering, discovery cache
 ├── src/core.ts              # streaming, retries, headers, token selection
 ├── src/converters.ts        # OMP message/tool payload conversion
 ├── src/eventstream.ts       # AWS Event Stream parser
@@ -141,7 +154,7 @@ omp-kiro-provider/
 Small, focused PRs are preferred. Before opening a PR:
 
 ```sh
-node --test tests/test-converters.ts
+npm test
 ```
 
 Do not include real Kiro/AWS credentials, traces containing bearer tokens, or private prompts in issues or PRs.

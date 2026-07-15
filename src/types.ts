@@ -93,6 +93,9 @@ export interface ModelLike {
   maxTokens: number
   api: string
   provider: string
+  baseUrl?: string
+  thinkingLevelMap?: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>
+  firstTokenTimeout?: number
 }
 
 export interface MessageLike {
@@ -133,7 +136,7 @@ export interface StreamOptions {
   signal?: AbortSignal
   headers?: Record<string, string>
   maxTokens?: number
-  reasoning?: boolean | "low" | "medium" | "high" | "xhigh"
+  reasoning?: boolean | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
   toolChoice?: "auto" | "none" | string
   onPayload?: (body: unknown, model: ModelLike) => unknown | Promise<unknown>
   onResponse?: (info: ProviderResponseInfo, model: ModelLike) => void | Promise<void>

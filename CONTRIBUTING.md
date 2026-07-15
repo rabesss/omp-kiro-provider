@@ -9,7 +9,7 @@ Normal usage does not require installing dependencies. The provider is loaded by
 For development, use Node.js 22 or newer and run:
 
 ```sh
-node --test tests/test-converters.ts
+npm test
 ```
 
 ## PR Guidelines

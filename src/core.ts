@@ -33,6 +33,7 @@ import type {
 } from "./types.ts"
 import { buildKiroPayload, resolveToolName } from "./converters.ts"
 import { AwsEventStreamParser } from "./eventstream.ts"
+import { DEFAULT_REGION, apiRegionFromBase, refreshKiroModelsCache } from "./models.ts"
 import { ThinkingTagParser } from "./thinking-parser.ts"
 import { parseBracketToolCalls } from "./bracket-tool-parser.ts"
 
@@ -61,16 +62,26 @@ const HIDDEN_REASONING_PLACEHOLDER = "Reasoning hidden by provider"
 
 /** Map reasoning level to thinking budget in tokens. */
 function thinkingBudget(level: boolean | string | undefined): number {
+  if (level === "max") return 100000
   if (level === "xhigh") return 50000
   if (level === "high") return 30000
   if (level === "medium") return 20000
+  if (level === "minimal") return 4000
   return 10000 // default / "low" / true
 }
 
-type ReasoningLevel = boolean | "off" | "low" | "medium" | "high" | "xhigh"
+type ReasoningLevel = boolean | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 
 function isReasoningLevel(value: unknown): value is ReasoningLevel {
-  return value === true || value === false || value === "off" || value === "low" || value === "medium" || value === "high" || value === "xhigh"
+  return value === true ||
+    value === false ||
+    value === "off" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
 }
 
 function readReasoningField(source: unknown, key: string): ReasoningLevel | undefined {
@@ -84,20 +95,28 @@ export function shouldRetryHttpStatus(status: number): boolean {
   return status >= 500
 }
 
-export function resolveReasoningLevel(model: Pick<ModelLike, "id" | "name">, options?: StreamOptions): ReasoningLevel | undefined {
+export function resolveReasoningLevel(model: Pick<ModelLike, "id" | "name" | "thinkingLevelMap">, options?: StreamOptions): ReasoningLevel | undefined {
   const direct = readReasoningField(options, "reasoning")
-  if (direct !== undefined) return direct
+  if (direct !== undefined) return mapModelReasoningLevel(model, direct)
 
   const legacy = readReasoningField(options, "reasoningEffort")
-  if (legacy !== undefined) return legacy
+  if (legacy !== undefined) return mapModelReasoningLevel(model, legacy)
 
   const metadata = options && typeof options === "object" ? (options as Record<string, unknown>).metadata : undefined
   const metadataReasoning = readReasoningField(metadata, "reasoning") ?? readReasoningField(metadata, "reasoningEffort")
-  if (metadataReasoning !== undefined) return metadataReasoning
+  if (metadataReasoning !== undefined) return mapModelReasoningLevel(model, metadataReasoning)
 
   const selector = `${model.id}:${model.name}`
-  const match = selector.match(/:(xhigh|high|medium|low|off)(?:\b|$)/)
-  return match ? (match[1] as Exclude<ReasoningLevel, boolean>) : undefined
+  const match = selector.match(/:(max|xhigh|high|medium|low|minimal|off)(?:\b|$)/)
+  return match ? mapModelReasoningLevel(model, match[1] as Exclude<ReasoningLevel, boolean>) : undefined
+}
+
+function mapModelReasoningLevel(model: Pick<ModelLike, "thinkingLevelMap">, level: ReasoningLevel): ReasoningLevel | undefined {
+  if (typeof level !== "string") return level
+  const mapped = model.thinkingLevelMap?.[level]
+  if (mapped === null) return undefined
+  if (mapped === undefined) return level
+  return isReasoningLevel(mapped) ? mapped : level
 }
 
 // ---------------------------------------------------------------------------
@@ -622,6 +641,17 @@ export function createStreamKiro(deps: CoreDependencies) {
           profileArn = await resolveProfileArn(apiKey, `${apiBase}/generateAssistantResponse`, fetchImpl)
         }
 
+        void refreshKiroModelsCache({
+          accessToken: apiKey,
+          apiBase,
+          region: metaRaw?.region ?? apiRegionFromBase(apiBase) ?? DEFAULT_REGION,
+          profileArn,
+          fetchImpl,
+        }).catch(() => {
+          // Model discovery is a startup-maintenance aid. Static models remain
+          // the fallback if Kiro denies discovery or the cache cannot be written.
+        })
+
         // --- Thinking / reasoning mode ---
         // Inject <thinking_mode> into system prompt so the model produces <thinking> tags.
         // Skip for reasoningHidden models (server-side reasoning, no tags emitted).
@@ -785,7 +815,7 @@ export function createStreamKiro(deps: CoreDependencies) {
               if (controller.signal.aborted) throw abortError("Aborted")
 
               // Compute per-read timeout based on whether we've seen content yet
-              const readTimeoutMs = gotFirstContent ? IDLE_STREAM_TIMEOUT_MS : FIRST_TOKEN_TIMEOUT_MS
+              const readTimeoutMs = gotFirstContent ? IDLE_STREAM_TIMEOUT_MS : (model.firstTokenTimeout ?? FIRST_TOKEN_TIMEOUT_MS)
               const elapsed = Date.now() - lastContentTime
               if (elapsed >= readTimeoutMs) {
                 if (!gotFirstContent) {
