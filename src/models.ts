@@ -3,7 +3,6 @@ import {
   filterModelsByRegion,
   staticKiroModels,
   toProviderModel,
-  validateModelCatalog,
   type KiroModelDef,
 } from "./model-catalog.ts"
 import type { ModelLike } from "./types.ts"
@@ -49,5 +48,5 @@ export function loadRegisteredModels(options: {
   const now = options.now ?? Date.now()
   const cached = readCachedModelsSync(options.region, now, options.cachePath)
   const source: KiroModelDef[] = cached ?? filterModelsByRegion(staticKiroModels, options.region)
-  return validateModelCatalog(source).map((model) => toProviderModel(model, options.apiBase))
+  return source.map((model) => toProviderModel(model, options.apiBase))
 }

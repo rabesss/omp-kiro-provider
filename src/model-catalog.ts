@@ -283,7 +283,10 @@ export function inferModelDefinition(id: string): KiroModelDef {
   const claude = lower.startsWith("claude-")
   const gpt = lower.startsWith("gpt-")
   const auto = lower === "auto"
-  const oneMillion = auto || lower.includes("1m") || lower === "claude-opus-4-8" || lower.endsWith("-4-7")
+  const oneMillion = auto
+    || lower.includes("1m")
+    || lower === "claude-opus-4-8"
+    || lower === "claude-opus-4-7"
   const reasoning = auto
     || gpt
     || (claude && !lower.includes("haiku"))

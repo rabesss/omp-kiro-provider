@@ -7,6 +7,7 @@ import { join } from "node:path"
 import { resolveReasoningLevel } from "../src/core.ts"
 import {
   filterModelsByRegion,
+  inferModelDefinition,
   loadRegisteredModels,
   MODEL_DISCOVERY_TIMEOUT_MS,
   MODEL_CACHE_TTL_MS,
@@ -127,6 +128,11 @@ describe("Kiro model catalog", () => {
     assert.equal(futureGpt.contextWindow, 300_000)
     assert.equal(futureGpt.maxTokens, 100_000)
     assert.equal(futureGpt.firstTokenTimeout, 180_000)
+  })
+
+  it("does not infer a million-token context from a non-Claude version suffix", () => {
+    assert.equal(inferModelDefinition("future-family-4-7").contextWindow, 200_000)
+    assert.equal(inferModelDefinition("claude-opus-4-7").contextWindow, 1_000_000)
   })
 
   it("refreshes and reloads the dynamic model cache", async () => {
