@@ -54,12 +54,11 @@ const streamKiro = createStreamKiro({
 
 export default function (pi: ExtensionAPI) {
   pi.registerProvider("kiro", {
-    name: "Kiro",
     baseUrl: API_BASE,
     apiKey: "KIRO_API_KEY",
     authHeader: true,
-    api: "kiro-custom",
-    streamSimple: streamKiro,
+    api: "kiro-custom" as never,
+    streamSimple: streamKiro as never,
     oauth: {
       name: "Kiro",
       login,
@@ -67,5 +66,5 @@ export default function (pi: ExtensionAPI) {
       getApiKey,
     },
     models: MODELS,
-  } as never) // The extension package does not expose custom provider API types.
+  })
 }

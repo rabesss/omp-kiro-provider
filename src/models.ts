@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -12,7 +12,9 @@ export interface ModelDef {
   maxTokens: number
 }
 
-const MODELS_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "models.json")
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
+const MODELS_PATH = [join(MODULE_DIR, "..", "models.json"), join(MODULE_DIR, "models.json")]
+  .find(existsSync) ?? join(MODULE_DIR, "..", "models.json")
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
 export function loadModels(): Array<ModelDef & { cost: typeof ZERO_COST }> {
