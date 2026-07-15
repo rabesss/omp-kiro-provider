@@ -31,6 +31,7 @@ describe("Kiro model catalog", () => {
     )
     assert.ok(models.every((model) => model.contextWindow > 0 && model.maxTokens > 0))
     assert.ok(models.every((model) => model.cost.input === 0 && model.cost.output === 0))
+    assert.notEqual(models[0].cost, models[1].cost)
   })
 
   it("keeps the new flagship model metadata explicit", () => {

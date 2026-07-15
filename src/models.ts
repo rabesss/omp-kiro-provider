@@ -35,6 +35,6 @@ export function loadModels(): Array<ModelDef & { cost: typeof ZERO_COST }> {
     }
     if (ids.has(model.id)) throw new Error(`models.json contains duplicate id: ${model.id}`)
     ids.add(model.id)
-    return { ...(model as ModelDef), cost: ZERO_COST }
+    return { ...(model as ModelDef), cost: { ...ZERO_COST } }
   })
 }
