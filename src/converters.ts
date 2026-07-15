@@ -573,9 +573,7 @@ export function buildKiroPayload(
   clearTruncationMap()
 
   const sysPrompt = systemPromptText(context.systemPrompt)
-  // Convert pi dash-form (claude-sonnet-4-5) to Kiro dot-form (claude-sonnet-4.5)
-  // Regex: only matches digit-dash-digit (version numbers), not general dashes.
-  // Anchored to avoid false positives on things like "model-3-20250101".
+  // OMP selectors use dash-form versions; Kiro's API expects dot-form.
   const kiroModelId = modelId.replace(/(\d)-(\d)(?!\d)/g, "$1.$2")
   let { history, currentContent, currentImages, currentToolResults } = buildHistory(
     context.messages,
