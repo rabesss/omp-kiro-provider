@@ -14,10 +14,14 @@ The PR review charter is in [`REVIEW.md`](REVIEW.md).
 
 ## Pullfrog
 
-Pullfrog runs in GitHub Actions with BYOK via Z.AI GLM-5.2:
+Pullfrog runs in GitHub Actions with the organization-level Custom OAI
+connection:
 
 - Workflow: [`.github/workflows/pullfrog.yml`](.github/workflows/pullfrog.yml)
-- Provider config: [`opencode.json`](opencode.json) (`zai/glm-5.2` via the Z.AI **Coding Plan** endpoint)
-- Secrets: `ZAI_API_KEY` and `PULLFROG_MODEL=zai/glm-5.2` in the **Pullfrog console** (org-level secrets are inherited by every repo — no per-repo GitHub Actions secret mapping needed)
+- Provider/model: `glm-5.3` through the Z.AI Coding Plan endpoint, selected
+  in the Pullfrog console.
+- Credentials and endpoint metadata are stored in the Pullfrog console; do not
+  add a repository OpenCode provider config or pass the Z.AI key through this
+  workflow.
 
 Pullfrog honors this `AGENTS.md` and the review charter in [`REVIEW.md`](REVIEW.md). Dashboard triggers and per-repo instructions live in the Pullfrog console.
