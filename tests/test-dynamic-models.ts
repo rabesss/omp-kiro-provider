@@ -106,6 +106,29 @@ describe("parseLiveModels", () => {
     assert.deepEqual(parseLiveModels({ availableModels: [{ modelId: "" }, { id: 1 }, null] }), [])
   })
 
+  it("normalizes dotted Kiro ids to overlay dash form", () => {
+    assert.deepEqual(
+      parseLiveModels({
+        models: [
+          { modelId: "claude-opus-4.7", modelName: "Claude Opus 4.7" },
+          { modelId: "gpt-5.6-sol" },
+          { modelId: "claude-sonnet-4.6-1m" },
+          { modelId: "auto" },
+          { modelId: "qwen3-coder-480b" },
+          { modelId: "claude-sonnet-4-6" },
+        ],
+      }),
+      [
+        { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
+        { id: "gpt-5-6-sol", name: "gpt-5-6-sol" },
+        { id: "claude-sonnet-4-6-1m", name: "claude-sonnet-4-6-1m" },
+        { id: "auto", name: "auto" },
+        { id: "qwen3-coder-480b", name: "qwen3-coder-480b" },
+        { id: "claude-sonnet-4-6", name: "claude-sonnet-4-6" },
+      ],
+    )
+  })
+
   it("skips invalid and duplicate ids", () => {
     assert.deepEqual(
       parseLiveModels({
@@ -328,6 +351,31 @@ describe("fetchDynamicKiroModels", () => {
       fetchImpl: (async () => jsonResponse(200, { models: [{ modelId: "too-big", modelName: "Too Big" }] })) as typeof fetch,
     })
     assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only"])
+  })
+
+  it("applies overlay metadata when the live catalog uses dotted ids", async () => {
+    const overlay: OverlayModel[] = [
+      {
+        id: "claude-opus-4-7",
+        name: "Claude Opus 4.7",
+        reasoning: true,
+        reasoningHidden: true,
+        input: ["text", "image"],
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+        cost: { ...ZERO_COST },
+      },
+    ]
+    const result = await fetchDynamicKiroModels({
+      apiKey: "token-1",
+      apiBase: API_BASE,
+      overlay,
+      fetchImpl: (async () => jsonResponse(200, {
+        models: [{ modelId: "claude-opus-4.7", modelName: "Ignored Live Name" }],
+      })) as typeof fetch,
+    })
+    assert.deepEqual(result, overlay)
+    assert.notEqual(result[0], overlay[0])
   })
 
   it("merges overlay-only ids with new live ids on success", async () => {

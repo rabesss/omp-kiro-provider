@@ -59,7 +59,7 @@ export function parseLiveModels(payload: unknown): LiveModel[] | null {
   const seen = new Set<string>()
   for (const entry of raw) {
     if (!isRecord(entry)) continue
-    const id = nonEmptyString(entry.modelId) ?? nonEmptyString(entry.id)
+    const id = toOverlayModelId(nonEmptyString(entry.modelId) ?? nonEmptyString(entry.id))
     if (!id || seen.has(id)) continue
     seen.add(id)
 
@@ -206,6 +206,10 @@ function is2xx(response: Response): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function toOverlayModelId(id: string | undefined): string | undefined {
+  return id?.replace(/(\d)\.(\d)(?!\d)/g, "$1-$2")
 }
 
 function nonEmptyString(value: unknown): string | undefined {
