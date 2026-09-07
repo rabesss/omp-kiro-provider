@@ -245,7 +245,7 @@ describe("mergeLiveWithOverlay", () => {
 })
 
 describe("fetchDynamicKiroModels", () => {
-  it("returns an overlay copy and does not fetch when the token is blank or missing", async () => {
+  it("returns an empty list and does not fetch when the token is blank or missing", async () => {
     let calls = 0
     const fetchImpl = (async () => {
       calls += 1
@@ -265,9 +265,8 @@ describe("fetchDynamicKiroModels", () => {
     })
 
     assert.equal(calls, 0)
-    assert.deepEqual(missing, OVERLAY)
-    assert.deepEqual(blank, OVERLAY)
-    assert.notEqual(missing[0].cost, OVERLAY[0].cost)
+    assert.deepEqual(missing, [])
+    assert.deepEqual(blank, [])
   })
 
   it("sends Authorization Bearer and origin=AI_EDITOR", async () => {
@@ -319,7 +318,7 @@ describe("fetchDynamicKiroModels", () => {
     assert.ok(models.some((model) => model.id === "overlay-only"))
   })
 
-  it("falls back to an overlay copy on non-2xx, invalid JSON, oversized body, or thrown fetch", async () => {
+  it("returns an empty list on non-2xx, invalid JSON, oversized body, or thrown fetch", async () => {
     const cases: Array<typeof fetch> = [
       (async () => jsonResponse(503, { models: [{ modelId: "nope" }] })) as typeof fetch,
       (async () => jsonResponse(200, "{")) as typeof fetch,
@@ -337,12 +336,11 @@ describe("fetchDynamicKiroModels", () => {
         fetchImpl,
         maxBodyBytes: 64,
       })
-      assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only"])
-      assert.notEqual(result[0], OVERLAY[0])
+      assert.deepEqual(result, [])
     }
   })
 
-  it("falls back when the actual body exceeds maxBodyBytes", async () => {
+  it("returns an empty list when the actual body exceeds maxBodyBytes", async () => {
     const result = await fetchDynamicKiroModels({
       apiKey: "token-1",
       apiBase: API_BASE,
@@ -350,7 +348,7 @@ describe("fetchDynamicKiroModels", () => {
       maxBodyBytes: 16,
       fetchImpl: (async () => jsonResponse(200, { models: [{ modelId: "too-big", modelName: "Too Big" }] })) as typeof fetch,
     })
-    assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only"])
+    assert.deepEqual(result, [])
   })
 
   it("applies overlay metadata when the live catalog uses dotted ids", async () => {
@@ -428,10 +426,10 @@ describe("fetchDynamicKiroModels", () => {
       })) as typeof fetch,
     })
     assert.equal(cancelled, true)
-    assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only"])
+    assert.deepEqual(result, [])
   })
 
-  it("falls back when the response body stalls past timeoutMs", async () => {
+  it("returns an empty list when the response body stalls past timeoutMs", async () => {
     const result = await fetchDynamicKiroModels({
       apiKey: "token-1",
       apiBase: API_BASE,
@@ -446,10 +444,10 @@ describe("fetchDynamicKiroModels", () => {
         }),
       })) as typeof fetch,
     })
-    assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only"])
+    assert.deepEqual(result, [])
   })
 
-  it("falls back to overlay when the fetch times out", async () => {
+  it("returns an empty list when the fetch times out", async () => {
     const result = await fetchDynamicKiroModels({
       apiKey: "token-1",
       apiBase: API_BASE,
@@ -473,10 +471,10 @@ describe("fetchDynamicKiroModels", () => {
         return jsonResponse(200, { models: [{ modelId: "late" }] })
       }) as typeof fetch,
     })
-    assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only"])
+    assert.deepEqual(result, [])
   })
 
-  it("falls back to overlay when the live models array is empty", async () => {
+  it("returns an empty list when the live models array is empty", async () => {
     let calls = 0
     const result = await fetchDynamicKiroModels({
       apiKey: "token-1",
@@ -488,6 +486,6 @@ describe("fetchDynamicKiroModels", () => {
       }) as typeof fetch,
     })
     assert.equal(calls, 1)
-    assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only"])
+    assert.deepEqual(result, [])
   })
 })

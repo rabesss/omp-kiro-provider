@@ -417,3 +417,8 @@ export async function refreshToken(credentials: OMPCredentials): Promise<OMPCred
 export function getApiKey(credentials: OMPCredentials): string {
   return credentials.access
 }
+
+export function getStoredProfileArn(): string | undefined {
+  const arn = readMeta()?.profileArn
+  return typeof arn === "string" && arn.trim() !== "" ? arn.trim() : undefined
+}

@@ -107,9 +107,8 @@ export function mergeLiveWithOverlay(
 export async function fetchDynamicKiroModels(
   options: FetchDynamicKiroModelsOptions,
 ): Promise<OverlayModel[]> {
-  const fallback = () => copyOverlay(options.overlay)
   const apiKey = options.apiKey?.trim() ?? ""
-  if (!apiKey) return fallback()
+  if (!apiKey) return []
 
   const fetchImpl = options.fetchImpl ?? fetch
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -124,8 +123,8 @@ export async function fetchDynamicKiroModels(
       timeoutMs,
       maxBodyBytes,
     )
-    if (first.kind === "ok") return first.models ?? fallback()
-    if (options.profileArn === undefined || options.profileArn === "") return fallback()
+    if (first.kind === "ok") return first.models ?? []
+    if (options.profileArn === undefined || options.profileArn === "") return []
 
     const retry = await requestCatalog(
       fetchImpl,
@@ -135,10 +134,10 @@ export async function fetchDynamicKiroModels(
       timeoutMs,
       maxBodyBytes,
     )
-    if (retry.kind === "ok") return retry.models ?? fallback()
-    return fallback()
+    if (retry.kind === "ok") return retry.models ?? []
+    return []
   } catch {
-    return fallback()
+    return []
   }
 }
 
