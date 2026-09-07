@@ -116,22 +116,26 @@ export async function fetchDynamicKiroModels(
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
 
   try {
-    const first = await getListAvailableModels(
+    const first = await requestCatalog(
       fetchImpl,
       buildListAvailableModelsUrl(options.apiBase),
       apiKey,
+      options.overlay,
       timeoutMs,
+      maxBodyBytes,
     )
-    if (is2xx(first)) return (await modelsFromResponse(first, options.overlay, maxBodyBytes)) ?? fallback()
+    if (first.kind === "ok") return first.models ?? fallback()
     if (options.profileArn === undefined || options.profileArn === "") return fallback()
 
-    const retry = await getListAvailableModels(
+    const retry = await requestCatalog(
       fetchImpl,
       buildListAvailableModelsUrl(options.apiBase, "AI_EDITOR", options.profileArn),
       apiKey,
+      options.overlay,
       timeoutMs,
+      maxBodyBytes,
     )
-    if (is2xx(retry)) return (await modelsFromResponse(retry, options.overlay, maxBodyBytes)) ?? fallback()
+    if (retry.kind === "ok") return retry.models ?? fallback()
     return fallback()
   } catch {
     return fallback()
@@ -146,16 +150,18 @@ function copyOverlay(overlay: readonly OverlayModel[]): OverlayModel[] {
   }))
 }
 
-async function getListAvailableModels(
+async function requestCatalog(
   fetchImpl: typeof fetch,
   url: string,
   apiKey: string,
+  overlay: readonly OverlayModel[],
   timeoutMs: number,
-): Promise<Response> {
+  maxBodyBytes: number,
+): Promise<{ kind: "ok"; models: OverlayModel[] | null } | { kind: "http" }> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await fetchImpl(url, {
+    const response = await fetchImpl(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -163,6 +169,11 @@ async function getListAvailableModels(
       },
       signal: controller.signal,
     })
+    if (!is2xx(response)) return { kind: "http" }
+    return {
+      kind: "ok",
+      models: await modelsFromResponse(response, overlay, maxBodyBytes, controller.signal),
+    }
   } finally {
     clearTimeout(timer)
   }
@@ -172,31 +183,94 @@ async function modelsFromResponse(
   response: Response,
   overlay: readonly OverlayModel[],
   maxBodyBytes: number,
+  signal: AbortSignal,
 ): Promise<OverlayModel[] | null> {
-  const payload = await readBoundedJson(response, maxBodyBytes)
+  const payload = await readBoundedJson(response, maxBodyBytes, signal)
   if (payload === undefined) return null
   const live = parseLiveModels(payload)
   if (!live || live.length === 0) return null
   return mergeLiveWithOverlay(overlay, live)
 }
 
-async function readBoundedJson(response: Response, maxBodyBytes: number): Promise<unknown | undefined> {
+async function readBoundedJson(
+  response: Response,
+  maxBodyBytes: number,
+  signal: AbortSignal,
+): Promise<unknown | undefined> {
+  if (signal.aborted) return undefined
   const declared = response.headers?.get?.("content-length")
   if (declared) {
     const size = Number(declared)
     if (Number.isFinite(size) && size > maxBodyBytes) return undefined
   }
 
-  const bytes = typeof response.arrayBuffer === "function"
-    ? new Uint8Array(await response.arrayBuffer())
-    : new TextEncoder().encode(await response.text())
-  if (bytes.byteLength > maxBodyBytes) return undefined
+  const stream = response.body
+  const bytes = stream && typeof stream.getReader === "function"
+    ? await readBoundedStream(stream, maxBodyBytes, signal)
+    : await readBoundedBuffer(response, maxBodyBytes, signal)
+  if (!bytes) return undefined
 
   try {
     return JSON.parse(new TextDecoder().decode(bytes))
   } catch {
     return undefined
   }
+}
+
+async function readBoundedStream(
+  stream: ReadableStream<Uint8Array>,
+  maxBodyBytes: number,
+  signal: AbortSignal,
+): Promise<Uint8Array | undefined> {
+  const reader = stream.getReader()
+  const onAbort = () => {
+    reader.cancel().catch(() => {})
+  }
+  signal.addEventListener("abort", onAbort)
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      if (signal.aborted) return undefined
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > maxBodyBytes) {
+        await reader.cancel().catch(() => {})
+        return undefined
+      }
+      chunks.push(value)
+    }
+  } catch {
+    return undefined
+  } finally {
+    signal.removeEventListener("abort", onAbort)
+  }
+  return concatBytes(chunks, total)
+}
+
+async function readBoundedBuffer(
+  response: Response,
+  maxBodyBytes: number,
+  signal: AbortSignal,
+): Promise<Uint8Array | undefined> {
+  if (signal.aborted) return undefined
+  const bytes = typeof response.arrayBuffer === "function"
+    ? new Uint8Array(await response.arrayBuffer())
+    : new TextEncoder().encode(await response.text())
+  if (signal.aborted || bytes.byteLength > maxBodyBytes) return undefined
+  return bytes
+}
+
+function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return out
 }
 
 function is2xx(response: Response): boolean {

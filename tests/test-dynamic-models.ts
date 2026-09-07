@@ -405,6 +405,50 @@ describe("fetchDynamicKiroModels", () => {
     })
   })
 
+  it("cancels a streamed body once maxBodyBytes is exceeded", async () => {
+    let cancelled = false
+    const chunk = new Uint8Array(12)
+    const result = await fetchDynamicKiroModels({
+      apiKey: "token-1",
+      apiBase: API_BASE,
+      overlay: OVERLAY,
+      maxBodyBytes: 16,
+      fetchImpl: (async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: new ReadableStream({
+          pull(controller) {
+            controller.enqueue(chunk)
+          },
+          cancel() {
+            cancelled = true
+          },
+        }),
+      })) as typeof fetch,
+    })
+    assert.equal(cancelled, true)
+    assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only"])
+  })
+
+  it("falls back when the response body stalls past timeoutMs", async () => {
+    const result = await fetchDynamicKiroModels({
+      apiKey: "token-1",
+      apiBase: API_BASE,
+      overlay: OVERLAY,
+      timeoutMs: 20,
+      fetchImpl: (async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: new ReadableStream({
+          start() {},
+        }),
+      })) as typeof fetch,
+    })
+    assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only"])
+  })
+
   it("falls back to overlay when the fetch times out", async () => {
     const result = await fetchDynamicKiroModels({
       apiKey: "token-1",
