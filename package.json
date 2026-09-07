@@ -19,8 +19,8 @@
     "url": "https://github.com/rabesss/omp-kiro-provider/issues"
   },
   "scripts": {
-    "test": "node --test tests/test-converters.ts tests/test-models.ts",
-    "test:unit": "node --test tests/test-converters.ts tests/test-models.ts"
+    "test": "node --test tests/test-converters.ts tests/test-models.ts tests/test-dynamic-models.ts",
+    "test:unit": "node --test tests/test-converters.ts tests/test-models.ts tests/test-dynamic-models.ts"
   },
   "pi": {
     "extensions": [
