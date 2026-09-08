@@ -17,8 +17,9 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent"
 
 import { createStreamKiro } from "./src/core.ts"
+import { fetchDynamicKiroModels } from "./src/dynamic-models.ts"
 import { loadModels } from "./src/models.ts"
-import { getApiKey, login, refreshToken } from "./src/oauth.ts"
+import { getApiKey, getStoredProfileArn, login, refreshToken } from "./src/oauth.ts"
 import { calculateCost, createAssistantMessageEventStream } from "./src/runtime.ts"
 
 // ---------------------------------------------------------------------------
@@ -66,5 +67,11 @@ export default function (pi: ExtensionAPI) {
       getApiKey,
     },
     models: MODELS,
+    fetchDynamicModels: (apiKey?: string) => fetchDynamicKiroModels({
+      apiKey,
+      apiBase: API_BASE,
+      overlay: MODELS,
+      profileArn: getStoredProfileArn(),
+    }),
   })
 }

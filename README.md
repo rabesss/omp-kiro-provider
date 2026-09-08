@@ -17,9 +17,10 @@ This is an unofficial, community-maintained provider. It is not affiliated with,
 - AWS Event Stream response decoding.
 - Streaming text, reasoning/thinking markers, and tool-call conversion.
 - Retry handling for transient capacity errors, empty responses, and selected 5xx failures.
-- Validated, reviewable static model catalog.
+- Hybrid runtime model discovery. With a Kiro OAuth or API credential, the provider calls Amazon Q `ListAvailableModels` and merges live ids with `models.json`.
+- `models.json` overlay for reviewed capabilities. OMP keeps that static catalog when live discovery returns empty.
 - Basic cost metadata set to zero because Kiro trial/subscription usage is not billed through OMP.
-- Unit tests for converters, event-stream parsing, and model catalog invariants.
+- Unit tests for converters, event-stream parsing, model catalog invariants, and dynamic discovery.
 
 ## Install
 
@@ -95,7 +96,15 @@ Do not use `--provider kiro`; OMP resolves extension-defined providers through q
 
 ## Models
 
-Model metadata is committed in `models.json`. It includes context windows, max-token limits, reasoning flags, and text/image capability flags. The registry currently includes selectors such as:
+With a Kiro OAuth or API credential, the provider calls Amazon Q `ListAvailableModels` and merges live ids with overlay metadata from `models.json`. The request is `GET https://q.{region}.amazonaws.com/ListAvailableModels?origin=AI_EDITOR`, using `KIRO_API_BASE` when that variable is set.
+
+`models.json` is the capability overlay registered as OMP's static `models` catalog. It records context windows, max-token limits, reasoning flags, and text or image capability flags. Discovery requires auth. There is no public catalog. If you are unauthenticated or discovery fails, `fetchDynamicModels` returns an empty list so OMP does not cache a fake live catalog as an authoritative snapshot. The static `models.json` registration stays visible.
+
+Unknown live ids are text-only with conservative token defaults. The provider does not guess vision or reasoning for those ids.
+
+The provider does not write `models.json` at runtime. There is no weekly updater.
+
+The registry currently includes selectors such as:
 
 - `kiro/auto`
 - `kiro/claude-sonnet-4-5`
@@ -112,7 +121,7 @@ Model metadata is committed in `models.json`. It includes context windows, max-t
 - `kiro/gpt-5-6-terra`
 - `kiro/gpt-5-6-luna`
 
-The provider validates and registers this catalog at startup. When Kiro changes its model list, update `models.json` in a normal reviewable PR and run the test suite before merging. Keeping availability and capabilities explicit avoids guessing metadata for models the provider has not verified.
+The provider registers the overlay at startup. When OMP passes a credential to `fetchDynamicModels`, the provider merges live `ListAvailableModels` ids with that overlay. Desktop and IdC sessions retry `ListAvailableModels` with the sidecar `profileArn` only after a non-2xx first response. When reviewed capability metadata changes, update `models.json` in a reviewable PR and run the test suite before merging.
 
 ## Development
 
@@ -128,8 +137,9 @@ Useful files:
 ```text
 omp-kiro-provider/
 ├── index.ts                 # OMP extension entry point
-├── models.json              # committed model registry
+├── models.json              # committed capability overlay and fallback catalog
 ├── src/models.ts            # small filesystem loader and catalog validation
+├── src/dynamic-models.ts    # ListAvailableModels parse, merge, and fetch
 ├── src/core.ts              # streaming, retries, headers, token selection
 ├── src/converters.ts        # OMP message/tool payload conversion
 ├── src/eventstream.ts       # AWS Event Stream parser
