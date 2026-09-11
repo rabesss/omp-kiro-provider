@@ -36,3 +36,4 @@ jobs:
         uses: Factory-AI/droid-action@main
         with:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
+          allowed_bots: dependabot,factory-droid
