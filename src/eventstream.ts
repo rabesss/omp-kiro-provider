@@ -48,8 +48,15 @@ export interface ContextUsageEvent {
   percentage: number
 }
 
+/** Server-side reasoning streamed by Kiro 5.x models as `reasoningContentEvent`. */
+export interface ReasoningEvent {
+  type: "reasoning"
+  text: string
+}
+
 export type KiroEvent =
   | ContentEvent
+  | ReasoningEvent
   | ToolStartEvent
   | ToolInputEvent
   | ToolStopEvent
@@ -113,6 +120,8 @@ const EVENT_PATTERNS: ReadonlyArray<{ prefix: string; eventType: string }> = [
   { prefix: '{"stop":', eventType: "tool_stop" },
   { prefix: '{"content":', eventType: "content" },
   { prefix: '{"content": ', eventType: "content" },
+  { prefix: '{"text":', eventType: "reasoning" },
+  { prefix: '{"text": ', eventType: "reasoning" },
   { prefix: '{"usage":', eventType: "usage" },
   { prefix: '{"metricsEvent":', eventType: "usage" },
   { prefix: '{"metrics":', eventType: "usage" },
@@ -190,6 +199,12 @@ export class AwsEventStreamParser {
     eventType: string,
   ): KiroEvent | null {
     switch (eventType) {
+      case "reasoning": {
+        const text = String(data.text ?? "")
+        if (text === "") return null
+        return { type: "reasoning", text }
+      }
+
       case "content": {
         const content = String(data.content ?? "")
         if (content === "") return null  // skip empty content deltas

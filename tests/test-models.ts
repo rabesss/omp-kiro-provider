@@ -6,9 +6,12 @@ import { loadModels } from "../src/models.ts"
 const REQUIRED_MODELS = [
   "claude-opus-4-5",
   "claude-opus-4-6-1m",
+  "claude-opus-5",
+  "claude-opus-5-5",
   "claude-sonnet-4-5-1m",
   "claude-sonnet-4-6-1m",
   "claude-sonnet-5",
+  "claude-sonnet-5-5",
   "kimi-k2-5",
   "qwen3-coder-480b",
   "glm-4-7",
@@ -23,7 +26,7 @@ describe("Kiro model catalog", () => {
   it("loads a unique, valid static catalog", () => {
     const models = loadModels()
 
-    assert.equal(models.length, 26)
+    assert.equal(models.length, 29)
     assert.equal(new Set(models.map((model) => model.id)).size, models.length)
     assert.deepEqual(
       REQUIRED_MODELS.filter((id) => !models.some((model) => model.id === id)),
