@@ -294,6 +294,41 @@ describe("fetchDynamicKiroModels", () => {
     assert.equal(init?.method, "GET")
   })
 
+  it("marks ksk_ credentials with TokenType: API_KEY", async () => {
+    let init: RequestInit | undefined
+    const fetchImpl = (async (_input: RequestInfo | URL, requestInit?: RequestInit) => {
+      init = requestInit
+      return jsonResponse(200, { models: [{ modelId: "new-live", modelName: "New Live" }] })
+    }) as typeof fetch
+
+    await fetchDynamicKiroModels({
+      apiKey: "ksk_example_api_key",
+      apiBase: API_BASE,
+      overlay: OVERLAY,
+      fetchImpl,
+    })
+
+    assert.equal(header(init, "TokenType"), "API_KEY")
+    assert.equal(header(init, "Authorization"), "Bearer ksk_example_api_key")
+  })
+
+  it("omits TokenType for OAuth credentials", async () => {
+    let init: RequestInit | undefined
+    const fetchImpl = (async (_input: RequestInfo | URL, requestInit?: RequestInit) => {
+      init = requestInit
+      return jsonResponse(200, { models: [{ modelId: "new-live", modelName: "New Live" }] })
+    }) as typeof fetch
+
+    await fetchDynamicKiroModels({
+      apiKey: "aoa_example_oauth_token",
+      apiBase: API_BASE,
+      overlay: OVERLAY,
+      fetchImpl,
+    })
+
+    assert.equal(header(init, "TokenType"), undefined)
+  })
+
   it("omits profileArn on the first request and sends it only on retry after non-2xx", async () => {
     const arn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/default"
     const urls: string[] = []

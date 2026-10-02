@@ -209,7 +209,7 @@ async function resolveProfileArn(
 // Build headers for Kiro API request
 // ---------------------------------------------------------------------------
 
-function buildKiroHeaders(
+export function buildKiroHeaders(
   accessToken: string,
   isApiKey: boolean,
   _isIdc: boolean,
@@ -621,9 +621,11 @@ export function createStreamKiro(deps: CoreDependencies) {
         let profileArn: string | undefined
         if (metaRaw?.profileArn) {
           profileArn = metaRaw.profileArn
-        } else if (authMethod === "social") {
+        } else if (authMethod === "social" && !isApiKey) {
           // Only resolve profileArn for social (Google/GitHub) auth.
           // Builder ID / IDC tokens get 403 from ListAvailableProfiles.
+          // API keys are rejected outright ("API key authentication is not
+          // supported for this operation") and need no profileArn.
           profileArn = await resolveProfileArn(apiKey, `${apiBase}/generateAssistantResponse`, fetchImpl)
         }
 
