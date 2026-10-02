@@ -211,13 +211,13 @@ async function resolveProfileArn(
 
 function buildKiroHeaders(
   accessToken: string,
-  _isApiKey: boolean,
+  isApiKey: boolean,
   _isIdc: boolean,
 ): Record<string, string> {
   // Impersonate Kiro CLI (rust SDK) — matches mikeyobrien, hongyilyu, MasuRii
   const mid = randomUUID().replace(/-/g, "")
   const ua = `aws-sdk-rust/1.0.0 ua/2.1 os/other lang/rust api/codewhispererstreaming#1.28.3 m/E app/AmazonQ-For-CLI md/appVersion-1.28.3-${mid}`
-  return {
+  const headers: Record<string, string> = {
     "Authorization": `Bearer ${accessToken}`,
     "Content-Type": "application/x-amz-json-1.0",
     "Accept": "application/json",
@@ -229,6 +229,11 @@ function buildKiroHeaders(
     "amz-sdk-invocation-id": randomUUID(),
     "amz-sdk-request": "attempt=1; max=1",
   }
+  // Kiro API keys (ksk_) must be declared as such — same as kiro-cli and kirocc.
+  // Without it the API treats the bearer as an OAuth token and rejects the call
+  // (403 "bearer token invalid" / 400 "profileArn is required for this request").
+  if (isApiKey) headers["TokenType"] = "API_KEY"
+  return headers
 }
 // ---------------------------------------------------------------------------
 // Stream factory

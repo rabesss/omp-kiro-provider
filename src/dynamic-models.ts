@@ -165,6 +165,7 @@ async function requestCatalog(
       headers: {
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
+        ...(apiKey.startsWith("ksk_") ? { TokenType: "API_KEY" } : {}),
       },
       signal: controller.signal,
     })
