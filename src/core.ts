@@ -32,7 +32,7 @@ import type {
   Usage,
 } from "./types.ts"
 import { buildKiroPayload, resolveToolName } from "./converters.ts"
-import { AwsEventStreamParser } from "./eventstream.ts"
+import { AwsEventStreamParser, type StreamErrorEvent } from "./eventstream.ts"
 import { ThinkingTagParser } from "./thinking-parser.ts"
 import { parseBracketToolCalls } from "./bracket-tool-parser.ts"
 import { kiroBaseForRegion, kiroRegionFromProfileArn, resolveKiroProfileArn } from "./dynamic-models.ts"
@@ -50,6 +50,7 @@ const MAX_EMPTY_RETRIES = 2          // empty response retries
 const FIRST_TOKEN_TIMEOUT_MS = 180_000  // 3 minutes to get first content
 const IDLE_STREAM_TIMEOUT_MS = 300_000  // Match native kiro-cli's 5-minute operation timeout
 const CONNECTION_TIMEOUT_MS = 120_000    // 2 min for initial connection
+const MAX_CACHED_PROFILES = 32          // tokens rotate, so old entries are dead weight
 const KIRO_STREAM_GATE_POLL_MS = 500
 const KIRO_STREAM_GATE_HEARTBEAT_MS = 15_000
 const KIRO_STREAM_GATE_STALE_MS = 10 * 60_000
@@ -146,6 +147,17 @@ class RetryableError extends Error {
   constructor(message: string) { super(message) }
 }
 
+/** The error to fail a turn with when Kiro reports `event` mid-stream. */
+function streamFailure(event: StreamErrorEvent): Error {
+  if (`${event.errorType} ${event.message}`.includes("TEMPORARILY_SUSPENDED")) {
+    return new Error(`Kiro account suspended (detected in stream): ${event.message.slice(0, 200)}`)
+  }
+  const message = `Kiro stream error (${event.errorType}): ${event.message.slice(0, 300)}`
+  // Only a server-side failure is worth retrying; throttling is backpressure and a
+  // validation error fails the same way again.
+  return /unavailable|internal/i.test(event.errorType) ? new RetryableError(message) : new Error(message)
+}
+
 /** Read fresh access token from kiro-cli's SQLite database. */
 function tryReadCliToken(): string | undefined {
   try {
@@ -207,6 +219,8 @@ export function createStreamKiro(deps: CoreDependencies) {
   const apiBase = deps.apiBase
   const managementBase = deps.managementBase ?? apiBase.replace(/^(https?:\/\/)runtime\./, "$1management.")
   const profileArnCache = new Map<string, string>()
+  // Models whose reasoning stays server-side: listed in models.json, or seen sending redacted reasoning.
+  const hiddenReasoningModels = new Set(deps.hiddenReasoningModels ?? [])
   const fetchImpl = deps.fetchImpl ?? fetch
   const cwd = deps.cwd ?? (() => process.cwd())
   const now = deps.now ?? (() => Date.now())
@@ -484,7 +498,8 @@ export function createStreamKiro(deps: CoreDependencies) {
           case "reasoning": {
             // Kiro 5.x models stream reasoning on a dedicated channel
             // (reasoningContentEvent) instead of <thinking> tags in content.
-            if (!thinkingEnabled || reasoningHidden) break
+            if (!thinkingEnabled) break
+            closeHiddenBreadcrumb()
             if (!reasoningBlock) {
               reasoningBlock = { type: "thinking", thinking: "" }
               output.content.push(reasoningBlock)
@@ -495,6 +510,13 @@ export function createStreamKiro(deps: CoreDependencies) {
             reasoningBlock.thinking += delta
             totalContentLength += delta.length
             eventBuffer.push({ type: "thinking_delta", contentIndex: currentReasoningIdx, delta, partial: output })
+            break
+          }
+
+          case "reasoning_redacted": {
+            // The model reasoned server-side and Kiro withholds it; show the
+            // hidden-reasoning breadcrumb for this model from the next turn on.
+            hiddenReasoningModels.add(model.id)
             break
           }
 
@@ -652,6 +674,9 @@ export function createStreamKiro(deps: CoreDependencies) {
           if (options?.signal?.aborted) throw abortError()
           if (!profileArn) throw new Error("No accessible Kiro profile found for this account.")
           profileArnCache.set(apiKey, profileArn)
+          if (profileArnCache.size > MAX_CACHED_PROFILES) {
+            profileArnCache.delete(profileArnCache.keys().next().value as string)
+          }
         }
         // The runtime rejects a profile from another region, so inference follows the profile.
         const runtimeBase = kiroBaseForRegion(apiBase, kiroRegionFromProfileArn(profileArn))
@@ -661,7 +686,7 @@ export function createStreamKiro(deps: CoreDependencies) {
         // Skip for reasoningHidden models (server-side reasoning, no tags emitted).
         const reasoningLevel = resolveReasoningLevel(model, options)
         thinkingEnabled = reasoningLevel === false || reasoningLevel === "off" ? false : !!reasoningLevel || !!model.reasoning
-        reasoningHidden = !!model.reasoningHidden
+        reasoningHidden = !!model.reasoningHidden || hiddenReasoningModels.has(model.id)
 
         let systemPromptOverride = context.systemPrompt
         if (thinkingEnabled && !reasoningHidden) {
@@ -851,15 +876,13 @@ export function createStreamKiro(deps: CoreDependencies) {
                 for (const event of events) {
                   if (controller.signal.aborted) throw abortError("Aborted")
 
-                  // Check for INSUFFICIENT_MODEL_CAPACITY in content
-                  if (event.type === "content" && event.content.includes("INSUFFICIENT_MODEL_CAPACITY")) {
-                    capacityRetryable = true
-                    continue // skip — don't buffer capacity error
-                  }
-
-                  // Check for TEMPORARILY_SUSPENDED in stream content (200 OK with ban message)
-                  if (event.type === "content" && event.content.includes("TEMPORARILY_SUSPENDED")) {
-                    throw new Error(`Kiro account suspended (detected in stream). Content: ${event.content.slice(0, 200)}`)
+                  if (event.type === "error") {
+                    // Out of capacity: Kiro sends a ThrottlingException whose reason says so.
+                    if (`${event.errorType} ${event.message}`.includes("INSUFFICIENT_MODEL_CAPACITY")) {
+                      capacityRetryable = true
+                      continue
+                    }
+                    throw streamFailure(event)
                   }
 
                   // Any decoded frame shows the stream is alive; a model can reason or
@@ -871,7 +894,8 @@ export function createStreamKiro(deps: CoreDependencies) {
                     handleEvent(event)
                   }
                 }
-                flushBuffer()
+                // Out of capacity: keep what this chunk produced off screen so the attempt can retry.
+                if (!capacityRetryable) flushBuffer()
               } catch (err) {
                 clearTimeout(readTimeoutTimer)
                 if (err instanceof DOMException && err.name === "AbortError" && !controller.signal.aborted) {
@@ -885,7 +909,11 @@ export function createStreamKiro(deps: CoreDependencies) {
               }
             }
 
-            // If capacity was insufficient, retry (outer loop)
+            // If capacity was insufficient, retry (outer loop) unless part of the
+            // answer is already on screen, where a retry would show it twice.
+            if (capacityRetryable && attemptEventsFlushed) {
+              throw new Error("Kiro ran out of model capacity mid-response (INSUFFICIENT_MODEL_CAPACITY)")
+            }
             if (capacityRetryable && outerAttempt < maxAttempts - 1) {
               try { await reader?.cancel() } catch { /* ok */ }
               try { reader?.releaseLock() } catch { /* ok */ }

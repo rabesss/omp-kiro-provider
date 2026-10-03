@@ -49,6 +49,7 @@ const streamKiro = createStreamKiro({
   authPaths: [],
   homeDir: "",
   calculateCost,
+  hiddenReasoningModels: MODELS.filter((model) => model.reasoningHidden).map((model) => model.id),
 })
 
 // ---------------------------------------------------------------------------

@@ -7,11 +7,14 @@
 
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 
 import { buildKiroPayload } from "../src/converters.ts"
-import { AwsEventStreamParser } from "../src/eventstream.ts"
+import { AwsEventStreamParser, type KiroEvent } from "../src/eventstream.ts"
 import { resolveReasoningLevel } from "../src/core.ts"
-import type { ContextLike, KiroEvent } from "../src/types.ts"
+import type { ContextLike } from "../src/types.ts"
+import { content, frame, frames, reasoning } from "./event-frames.ts"
 
 // ============================================================================
 // Converter tests
@@ -287,232 +290,186 @@ describe("buildKiroPayload", () => {
 // Event stream decoder tests
 // ============================================================================
 
+const FIXTURE = new Uint8Array(readFileSync(fileURLToPath(new URL("./fixtures/kiro-frames.sample.bin", import.meta.url))))
+
+/** Rebuilds tool calls from decoded events the way core.ts does. */
+function toolCalls(events: KiroEvent[]): { id: string; name: string; input: string }[] {
+  const calls: { id: string; name: string; input: string }[] = []
+  for (const event of events) {
+    if (event.type === "tool_start") calls.push({ id: event.toolUseId, name: event.name, input: event.input })
+    else if (event.type === "tool_input" && calls.length > 0) calls[calls.length - 1].input += event.input
+  }
+  return calls
+}
+
+function text(events: KiroEvent[]): string {
+  return events.map((event) => event.type === "content" ? event.content : "").join("")
+}
+
 describe("AwsEventStreamParser", () => {
-  it("parses content events", () => {
+  it("parses content frames", () => {
     const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('some:binary:prefix:headers {"content":"Hello world"}'))
-
-    assert.equal(events.length, 1)
-    assert.equal(events[0].type, "content")
-    if (events[0].type === "content") {
-      assert.equal(events[0].content, "Hello world")
-    }
+    assert.deepEqual(parser.feed(content("Hello world")), [{ type: "content", content: "Hello world" }])
   })
 
-  it("deduplicates repeated content", () => {
+  it("keeps a delta that repeats the previous one", () => {
     const parser = new AwsEventStreamParser()
-    const events1 = parser.feed(Buffer.from('{"content":"Hello"}'))
-    const events2 = parser.feed(Buffer.from('{"content":"Hello"}')) // same
-
-    assert.equal(events1.length, 1)
-    assert.equal(events2.length, 0) // deduplicated
-  })
-
-  it("parses reasoning content events", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(
-      Buffer.from('headers:reasoningContentEvent {"text":"37"}headers:reasoningContentEvent {"text":" * 89"}'),
-    )
-
-    assert.equal(events.length, 2)
-    assert.equal(events[0].type, "reasoning")
-    assert.equal(events[1].type, "reasoning")
-    if (events[0].type === "reasoning" && events[1].type === "reasoning") {
-      assert.equal(events[0].text, "37")
-      assert.equal(events[1].text, " * 89")
-    }
-  })
-
-  it("skips empty reasoning deltas", () => {
-    const parser = new AwsEventStreamParser()
-
-    assert.deepEqual(parser.feed(Buffer.from('{"text":""}')), [])
-  })
-
-  it("ignores reasoning payloads whose text is not a string", () => {
-    const parser = new AwsEventStreamParser()
-
-    assert.deepEqual(parser.feed(Buffer.from('{"text":37}{"text":{"redacted":true}}')), [])
-  })
-
-  it("drops a re-delivered reasoning delta like a content delta", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"text":"step"}{"text":"step"}{"content":"step"}'))
-
-    assert.deepEqual(events, [
-      { type: "reasoning", text: "step" },
-      { type: "content", content: "step" },
+    assert.deepEqual(parser.feed(frames(content("ha"), content("ha"))), [
+      { type: "content", content: "ha" },
+      { type: "content", content: "ha" },
     ])
   })
 
-  it("parses tool start events", () => {
+  it("parses reasoning frames and skips empty or non-string text", () => {
     const parser = new AwsEventStreamParser()
-    const events = parser.feed(
-      Buffer.from('{"name":"read_file","toolUseId":"tu1","input":{"path":"/foo"}}'),
-    )
-
-    assert.equal(events.length, 1)
-    if (events[0].type === "tool_start") {
-      assert.equal(events[0].name, "read_file")
-      assert.equal(events[0].toolUseId, "tu1")
-      assert.equal(events[0].input, '{"path":"/foo"}')
-    }
+    const events = parser.feed(frames(
+      reasoning("37"),
+      reasoning(" * 89"),
+      reasoning(""),
+      frame("reasoningContentEvent", { text: 37 }),
+    ))
+    assert.deepEqual(events, [
+      { type: "reasoning", text: "37" },
+      { type: "reasoning", text: " * 89" },
+    ])
   })
 
-  it("parses tool start with stop=true (single-shot tool)", () => {
+  it("reports redacted reasoning without its opaque content", () => {
     const parser = new AwsEventStreamParser()
-    const events = parser.feed(
-      Buffer.from('{"name":"get_time","toolUseId":"tu2","input":"","stop":true}'),
-    )
-
-    assert.equal(events.length, 1)
-    if (events[0].type === "tool_start") {
-      assert.equal(events[0].stop, true)
-    }
+    const events = parser.feed(frame("reasoningContentEvent", { redactedContent: "LktUUn5+opaque", signature: "sig" }))
+    assert.deepEqual(events, [{ type: "reasoning_redacted" }])
   })
 
-  it("parses tool input continuation", () => {
+  it("assembles a tool call streamed over several frames", () => {
     const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"input":"more data"}'))
-
-    assert.equal(events.length, 1)
-    if (events[0].type === "tool_input") {
-      assert.equal(events[0].input, "more data")
-    }
+    const events = parser.feed(frames(
+      frame("toolUseEvent", { name: "read", toolUseId: "tu1" }),
+      frame("toolUseEvent", { input: '{"path":', name: "read", toolUseId: "tu1" }),
+      frame("toolUseEvent", { input: '"/foo"}', name: "read", toolUseId: "tu1" }),
+      frame("toolUseEvent", { name: "read", stop: true, toolUseId: "tu1" }),
+    ))
+    assert.deepEqual(events, [
+      { type: "tool_start", toolUseId: "tu1", name: "read", input: "", stop: false },
+      { type: "tool_input", input: '{"path":' },
+      { type: "tool_input", input: '"/foo"}' },
+      { type: "tool_stop", stop: true },
+    ])
   })
 
-  it("parses tool stop", () => {
+  it("parses a single-frame tool call with object input", () => {
     const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"stop":true}'))
-
-    assert.equal(events.length, 1)
-    if (events[0].type === "tool_stop") {
-      assert.equal(events[0].stop, true)
-    }
+    const events = parser.feed(frame("toolUseEvent", { name: "tool", toolUseId: "t1", input: { nested: { deep: "value" } }, stop: true }))
+    assert.deepEqual(events, [
+      { type: "tool_start", toolUseId: "t1", name: "tool", input: '{"nested":{"deep":"value"}}', stop: true },
+    ])
   })
 
-  it("parses a named streamed-tool terminator as tool stop", () => {
+  it("starts a new call when the tool use id changes", () => {
     const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"name":"shell","stop":true,"toolUseId":"tu3"}'))
-
-    assert.equal(events.length, 1)
-    assert.equal(events[0].type, "tool_stop")
+    const events = parser.feed(frames(
+      frame("toolUseEvent", { name: "a", toolUseId: "t1", input: "{}" }),
+      frame("toolUseEvent", { name: "b", toolUseId: "t2", input: "{}", stop: true }),
+    ))
+    assert.deepEqual(toolCalls(events).map((call) => call.id), ["t1", "t2"])
   })
 
-  it("handles incremental chunks (incomplete JSON)", () => {
+  it("reassembles frames split across chunks", () => {
+    const body = frames(content("complete "), frame("toolUseEvent", { name: "read", toolUseId: "t1", input: "{}", stop: true }))
     const parser = new AwsEventStreamParser()
-
-    // Feed first half
-    const events1 = parser.feed(Buffer.from('{"content":'))
-    assert.equal(events1.length, 0) // incomplete
-
-    // Feed second half
-    const events2 = parser.feed(Buffer.from('"complete text"}'))
-    assert.equal(events2.length, 1)
-    if (events2[0].type === "content") {
-      assert.equal(events2[0].content, "complete text")
-    }
-  })
-
-  it("parses usage events", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"usage":{"inputTokens":100,"outputTokens":42,"cacheReadTokens":7,"cacheCreationTokens":3,"reasoningTokens":11}}'))
-    assert.equal(events.length, 1)
-    if (events[0].type === "usage") {
-      assert.equal(events[0].inputTokens, 100)
-      assert.equal(events[0].outputTokens, 42)
-      assert.equal(events[0].cacheReadTokens, 7)
-      assert.equal(events[0].cacheCreationTokens, 3)
-      assert.equal(events[0].reasoningTokens, 11)
-    }
-  })
-
-  it("parses wrapped Kiro metrics events", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"metricsEvent":{"inputTokens":100,"outputTokens":42,"cacheReadTokens":7,"cacheCreationTokens":3}}'))
-    assert.equal(events.length, 1)
-    if (events[0].type === "usage") {
-      assert.equal(events[0].inputTokens, 100)
-      assert.equal(events[0].outputTokens, 42)
-      assert.equal(events[0].cacheReadTokens, 7)
-      assert.equal(events[0].cacheCreationTokens, 3)
-    }
-  })
-  it("parses usage events with only inputTokens", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"usage":{"inputTokens":200}}'))
-    assert.equal(events.length, 1)
-    if (events[0].type === "usage") {
-      assert.equal(events[0].inputTokens, 200)
-      assert.equal(events[0].outputTokens, undefined)
-    }
-  })
-
-  it("parses context_usage events", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"contextUsagePercentage":75.5}'))
-
-    assert.equal(events.length, 1)
-    if (events[0].type === "context_usage") {
-      assert.equal(events[0].percentage, 75.5)
-    }
-  })
-
-  it("parses wrapped Kiro context usage events", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(Buffer.from('{"contextUsageEvent":{"contextUsagePercentage":75.5}}'))
-
-    assert.equal(events.length, 1)
-    if (events[0].type === "context_usage") {
-      assert.equal(events[0].percentage, 75.5)
-    }
-  })
-
-  it("handles multiple events in one chunk", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(
-      Buffer.from('garbage{"content":"hello"}more garbage{"content":"world"}'),
-    )
-
+    const events: KiroEvent[] = []
+    for (const byte of body) events.push(...parser.feed(new Uint8Array([byte])))
+    assert.deepEqual(events, new AwsEventStreamParser().feed(body))
     assert.equal(events.length, 2)
-    if (events[0].type === "content" && events[1].type === "content") {
-      assert.equal(events[0].content, "hello")
-      assert.equal(events[1].content, "world")
-    }
   })
 
-  it("resets state correctly", () => {
+  it("skips garbage and frames with a bad checksum", () => {
+    const corrupt = content("corrupt")
+    corrupt[corrupt.length - 6] ^= 0xff
     const parser = new AwsEventStreamParser()
-    parser.feed(Buffer.from('{"content":"before"}'))
+    const events = parser.feed(frames(new TextEncoder().encode('garbage{"content":"leak"}'), content("hello"), corrupt, content("world")))
+    assert.deepEqual(events, [
+      { type: "content", content: "hello" },
+      { type: "content", content: "world" },
+    ])
+  })
 
+  it("routes on the event type, not the payload shape", () => {
+    const parser = new AwsEventStreamParser()
+    const events = parser.feed(frames(
+      frame("followupPromptEvent", { content: "suggested follow-up" }),
+      frame("meteringEvent", { unit: "credit", usage: 0.12 }),
+      frame("codeReferenceEvent", { references: [] }),
+      content('{"toolUseId":"x","input":"{braces}"}'),
+    ))
+    assert.deepEqual(events, [{ type: "content", content: '{"toolUseId":"x","input":"{braces}"}' }])
+  })
+
+  it("reads token usage from metadata events", () => {
+    const parser = new AwsEventStreamParser()
+    const events = parser.feed(frame("metadataEvent", {
+      tokenUsage: {
+        uncachedInputTokens: 100, outputTokens: 42, totalTokens: 152,
+        cacheReadInputTokens: 7, cacheWriteInputTokens: 3, contextUsagePercentage: 12.5,
+      },
+    }))
+    assert.deepEqual(events, [
+      { type: "usage", inputTokens: 100, outputTokens: 42, cacheReadTokens: 7, cacheCreationTokens: 3, reasoningTokens: undefined },
+      { type: "context_usage", percentage: 12.5 },
+    ])
+  })
+
+  it("parses context usage events", () => {
+    const parser = new AwsEventStreamParser()
+    assert.deepEqual(parser.feed(frame("contextUsageEvent", { contextUsagePercentage: 75.5 })), [
+      { type: "context_usage", percentage: 75.5 },
+    ])
+  })
+
+  it("reports exception and error frames", () => {
+    const parser = new AwsEventStreamParser()
+    const events = parser.feed(frames(
+      frame("throttlingError", { message: "Rate exceeded", reason: "INSUFFICIENT_MODEL_CAPACITY" },
+        { ":message-type": "exception", ":exception-type": "ThrottlingException" }),
+      frame("validationError", { message: "Input is too long" }),
+      frame("", "", { ":message-type": "error", ":error-code": "InternalFailure", ":error-message": "Stream failed" }),
+    ))
+    assert.deepEqual(events, [
+      { type: "error", errorType: "ThrottlingException", message: "Rate exceeded (INSUFFICIENT_MODEL_CAPACITY)" },
+      { type: "error", errorType: "validationError", message: "Input is too long" },
+      { type: "error", errorType: "InternalFailure", message: "Stream failed" },
+    ])
+  })
+
+  it("drops a partial frame and the open tool call on reset", () => {
+    const parser = new AwsEventStreamParser()
+    parser.feed(frame("toolUseEvent", { name: "read", toolUseId: "t1" }))
+    parser.feed(content("partial").subarray(0, 10))
     parser.reset()
-
-    const events = parser.feed(Buffer.from('{"content":"before"}'))
-    assert.equal(events.length, 1) // no longer deduplicated after reset
+    assert.deepEqual(parser.feed(frame("toolUseEvent", { name: "read", toolUseId: "t1", input: "{}" })), [
+      { type: "tool_start", toolUseId: "t1", name: "read", input: "{}", stop: false },
+    ])
   })
 
-  it("handles JSON with nested braces", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(
-      Buffer.from('{"name":"tool","toolUseId":"t1","input":{"nested":{"deep":"value"}}}'),
-    )
+  // Captured from Kiro by Gavin Woods (github.com/GavinWoods/omp-kiro-provider).
+  describe("captured Kiro response", () => {
+    it("decodes the text, the streamed tool call, and the redacted reasoning", () => {
+      const events = new AwsEventStreamParser().feed(FIXTURE)
+      assert.equal(text(events), "<title>Print first line of file</title>test-marker-first-line")
+      assert.deepEqual(toolCalls(events), [{
+        id: "toolu_bdrk_016NS1XM5gC34YgrLC6sdGyw",
+        name: "read",
+        input: '{"path": "/tmp/kiro-capture-target.txt", "i": "Reading capture target file"}',
+      }])
+      assert.equal(events.filter((event) => event.type === "reasoning_redacted").length, 3)
+      assert.equal(events.filter((event) => event.type === "tool_stop").length, 1)
+    })
 
-    assert.equal(events.length, 1)
-    if (events[0].type === "tool_start") {
-      assert.ok(events[0].input.includes("nested"))
-    }
-  })
-
-  it("handles JSON with strings containing braces", () => {
-    const parser = new AwsEventStreamParser()
-    const events = parser.feed(
-      Buffer.from('{"content":"text with {braces} inside"}'),
-    )
-
-    assert.equal(events.length, 1)
-    if (events[0].type === "content") {
-      assert.equal(events[0].content, "text with {braces} inside")
-    }
+    it("decodes the same events when fed one byte at a time", () => {
+      const parser = new AwsEventStreamParser()
+      const events: KiroEvent[] = []
+      for (const byte of FIXTURE) events.push(...parser.feed(new Uint8Array([byte])))
+      assert.deepEqual(events, new AwsEventStreamParser().feed(FIXTURE))
+    })
   })
 })
 

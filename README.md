@@ -14,11 +14,11 @@ This is an unofficial, community-maintained provider. It is not affiliated with,
 - Dependency-free runtime: TypeScript source plus Node.js built-ins.
 - Supports API keys, Kiro CLI token reuse, Kiro IDE token fallback, and Builder ID or organization device-code login.
 - Automatic token refresh for supported OAuth/OIDC sessions.
-- AWS Event Stream response decoding.
-- Streaming text, reasoning (`<thinking>` tags and Kiro 5.x reasoning events), and tool-call conversion. OMP's `--thinking` level, `off` through `max`, sets the thinking budget.
-- Retry handling for transient capacity errors, empty responses, and selected 5xx failures.
-- Hybrid runtime model discovery. With a Kiro OAuth or API credential, the provider resolves the account profile through Kiro's management API and merges its live model ids with `models.json`.
-- `models.json` overlay for reviewed capabilities. OMP keeps that static catalog when live discovery returns empty.
+- AWS Event Stream decoding with frame checksums, routed on each frame's event type.
+- Streaming text, reasoning (`<thinking>` tags and Kiro 5.x reasoning events), and tool-call conversion. OMP's `--thinking` level, `off` through `max`, sets the thinking budget. Redacted reasoning is never shown; models that reason server-side show a "Reasoning hidden by provider" placeholder while they think.
+- Retry handling for capacity errors, empty responses, and selected 5xx failures, only while nothing has reached the screen. Errors Kiro sends mid-stream are reported, not swallowed.
+- Runtime model discovery. With a Kiro OAuth or API credential, the account's live catalog is the model list, so new Kiro models need no change here.
+- `models.json` as the offline catalog and as hints for what the live catalog leaves out.
 - Basic cost metadata set to zero because Kiro trial/subscription usage is not billed through OMP.
 - Unit tests for converters, event-stream parsing, model catalog invariants, and dynamic discovery.
 
@@ -130,9 +130,20 @@ tokens are not allowed to list profiles, so the provider uses the shared Builder
 when every canonical region answers "not authorized". If a region fails instead, the request
 reports that error and the lookup is retried on the next request.
 
-`models.json` is the capability overlay registered as OMP's static `models` catalog. It records context windows, max-token limits, reasoning flags, and text or image capability flags. Discovery requires auth. There is no public catalog. If you are unauthenticated or discovery fails, `fetchDynamicModels` returns an empty list so OMP does not cache a fake live catalog as an authoritative snapshot. The static `models.json` registration stays visible.
+The live catalog is authoritative: OMP lists exactly the models it returns. Names, token limits,
+and reasoning support come from the catalog (reasoning from the `thinking` or effort fields of a
+model's request schema). `models.json` fills in what the catalog leaves out and marks models whose
+reasoning stays server-side. Every Claude model accepts images; other models do when the catalog
+or `models.json` says so. A model in neither gets text-only input and conservative token defaults.
 
-Unknown live ids are text-only with conservative token defaults. The provider does not guess vision or reasoning for those ids.
+`models.json` is also OMP's static `models` catalog, used before the first discovery and whenever
+it fails. Discovery requires auth; there is no public catalog. When you are signed out or discovery
+fails, `fetchDynamicModels` fails rather than returning an empty list, because OMP would take an
+empty list as the account's whole catalog and drop every Kiro model. OMP then keeps its cached
+catalog or `models.json`.
+
+Models that reason server-side send redacted reasoning. The provider learns this from the stream,
+so such a model shows the placeholder from its next turn on without a `models.json` entry.
 
 The provider does not write `models.json` at runtime. There is no weekly updater.
 
@@ -154,7 +165,9 @@ The registry currently includes selectors such as:
 - `kiro/gpt-5-6-terra`
 - `kiro/gpt-5-6-luna`
 
-The provider registers the overlay at startup. When OMP passes a credential to `fetchDynamicModels`, the provider merges the account's live model ids with that overlay. New models such as Opus 5.5 appear automatically when the account catalog includes them. When reviewed capability metadata changes, update `models.json` in a reviewable PR and run the test suite before merging.
+New models such as Opus 5.5 appear when the account catalog includes them, and retired ones
+disappear, with no change to `models.json`. Edit it only to correct metadata the catalog gets
+wrong or leaves out, in a reviewable PR, and run the test suite before merging.
 
 ## Development
 
@@ -175,11 +188,22 @@ omp-kiro-provider/
 ├── src/dynamic-models.ts    # ListAvailableModels parse, merge, and fetch
 ├── src/core.ts              # streaming, retries, headers, token selection
 ├── src/converters.ts        # OMP message/tool payload conversion
-├── src/eventstream.ts       # AWS Event Stream parser
+├── src/eventstream.ts       # AWS Event Stream decoder
 ├── src/oauth.ts             # OMP login + token reuse/refresh
 ├── src/auth/                # device flow and refresh helpers
-└── tests/                   # pure unit tests
+└── tests/                   # pure unit tests; tests/fixtures holds a captured Kiro response
 ```
+
+### Running a local checkout
+
+- OMP runs the extension from a transpiled copy cached in
+  `~/.omp/cache/legacy-pi-extension-cache.db`. After editing the source, quit every `omp`
+  session and remove `~/.omp/cache/legacy-pi-extension-cache.db*` so the next run rebuilds it.
+  If an edit still has no effect, an OMP worker daemon may still hold the old build: find it with
+  `pgrep -af omp_worker` and stop it by PID.
+- Check which copy OMP loads. The `extensions:` path in `~/.omp/agent/config.yml` runs that
+  directory; a plugin install runs `~/.omp/plugins/node_modules/omp-kiro-provider`. To try a
+  checkout, point that path at it, or replace the plugin directory with a symlink to it.
 
 ## Security posture
 

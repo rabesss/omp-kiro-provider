@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, describe, it } from "node:test"
-import type { AssistantMessageEvent, AssistantMessageLike, ModelLike, StreamOptions } from "../src/types.ts"
+import type { AssistantMessageEvent, AssistantMessageLike, CoreDependencies, ModelLike, StreamOptions } from "../src/types.ts"
+import { chunked, content, eventStream, frame, frames, reasoning } from "./event-frames.ts"
 
 // Isolate the public login/refresh API from the developer's credentials.
 const home = mkdtempSync(join(tmpdir(), "omp-kiro-oauth-"))
@@ -107,7 +108,7 @@ describe("organization login", () => {
           || payload.conversationState?.currentMessage?.userInputMessage?.modelId !== "claude-opus-5.5") {
           return response({ message: "Invalid model or missing profile" }, 400)
         }
-        return new Response('{"content":"OK"}')
+        return eventStream(content("OK"))
       }) as typeof fetch,
       createStream: () => ({
         push(event) {
@@ -370,6 +371,7 @@ describe("cancelling while the profile is resolved", () => {
 function kiroTurns(
   fetchImpl: typeof fetch,
   model: Partial<ModelLike> = {},
+  deps: Partial<CoreDependencies> = {},
 ): (apiKey: string, options?: StreamOptions) => Promise<AssistantMessageLike> {
   const streamKiro = createStreamKiro({
     apiBase: "https://runtime.us-east-1.kiro.dev",
@@ -396,6 +398,7 @@ function kiroTurns(
     authPaths: [],
     homeDir: home,
     calculateCost: () => {},
+    ...deps,
   })
   return (apiKey, options = {}) => streamKiro({
     id: "claude-opus-5-5", name: "Claude Opus 5.5", api: "kiro-custom", provider: "kiro",
@@ -412,6 +415,20 @@ function streamOnce(
   return kiroTurns(fetchImpl)(apiKey, options)
 }
 
+/** Answers inference with `bodies` in turn; counts the calls and keeps the request bodies. */
+function kiro(bodies: (Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array>)[]) {
+  const calls = { inference: 0 }
+  const requests: string[] = []
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/List-Available-Profiles") {
+      return response({ profiles: [{ arn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/default" }] })
+    }
+    requests.push(String(init?.body))
+    return new Response(bodies[calls.inference++])
+  }) as typeof fetch
+  return { calls, requests, fetchImpl }
+}
+
 describe("profile region", () => {
   it("sends inference to the region that owns the profile", async () => {
     const euArn = "arn:aws:codewhisperer:eu-central-1:123456789012:profile/EUPROFILE"
@@ -424,7 +441,7 @@ describe("profile region", () => {
           : response({ message: "User is not authorized to access this feature." }, 403)
       }
       inferenceHosts.push(url.hostname)
-      return new Response('{"content":"OK"}')
+      return eventStream(content("OK"))
     }) as typeof fetch, "eu-organization-token")
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(inferenceHosts, ["runtime.eu-central-1.kiro.dev"])
@@ -444,7 +461,7 @@ describe("credential type header", () => {
           : response({ message: "The bearer token included in the request is invalid." }, 403)
       }
       inference = { tokenType: headers.get("TokenType"), profileArn: JSON.parse(String(init?.body)).profileArn }
-      return new Response('{"content":"OK"}')
+      return eventStream(content("OK"))
     }) as typeof fetch, "ksk_example_api_key")
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(inference, { tokenType: "API_KEY", profileArn: keyArn })
@@ -458,7 +475,7 @@ describe("credential type header", () => {
         return response({ profile: { arn: "arn:aws:codewhisperer:us-east-1:987654321098:profile/api-key" } })
       }
       inference = { authorization: headers.get("Authorization"), tokenType: headers.get("TokenType") }
-      return new Response('{"content":"OK"}')
+      return eventStream(content("OK"))
     }) as typeof fetch, " ksk_example_api_key\n")
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(inference, { authorization: "Bearer ksk_example_api_key", tokenType: "API_KEY" })
@@ -473,7 +490,7 @@ describe("credential type header", () => {
       }
       const headers = new Headers(init?.headers)
       tokenTypes = [headers.get("TokenType")]
-      return new Response('{"content":"OK"}')
+      return eventStream(content("OK"))
     }) as typeof fetch, "header-oauth-token", { headers: { tokentype: "API_KEY", Authorization: "Bearer other" } })
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(tokenTypes, [null])
@@ -486,27 +503,15 @@ describe("reasoning stream", () => {
     for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve))
   }
 
-  /** Answers inference with `bodies` in turn; counts the calls. */
-  const kiro = (bodies: string[]) => {
-    const calls = { inference: 0 }
-    const fetchImpl = (async (input: RequestInfo | URL) => {
-      if (new URL(String(input)).pathname === "/List-Available-Profiles") {
-        return response({ profiles: [{ arn: profileArn }] })
-      }
-      return new Response(bodies[calls.inference++])
-    }) as typeof fetch
-    return { calls, fetchImpl }
-  }
-
   it("retries an empty turn", async () => {
-    const { calls, fetchImpl } = kiro(["", '{"content":"OK"}'])
+    const { calls, fetchImpl } = kiro([frames(), content("OK")])
     const output = await streamOnce(fetchImpl, "empty-turn-token", { reasoning: "high" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.equal(calls.inference, 2)
   })
 
   it("reports a turn that only reasoned instead of replaying the shown reasoning", async () => {
-    const { calls, fetchImpl } = kiro(['{"text":"Thinking"}', '{"text":"Thinking"}{"content":"OK"}'])
+    const { calls, fetchImpl } = kiro([reasoning("Thinking"), frames(reasoning("Thinking"), content("OK"))])
     const output = await streamOnce(fetchImpl, "reasoning-only-token", { reasoning: "high" })
     assert.equal(output.stopReason, "error")
     assert.match(output.errorMessage ?? "", /after reasoning, without an answer/)
@@ -514,7 +519,7 @@ describe("reasoning stream", () => {
   })
 
   it("keeps the hidden-reasoning breadcrumb ahead of the answer across a retry", async () => {
-    const { calls, fetchImpl } = kiro(["", '{"content":"OK"}'])
+    const { calls, fetchImpl } = kiro([frames(), content("OK")])
     const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true })(
       "hidden-reasoning-token", { reasoning: "high" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
@@ -522,17 +527,52 @@ describe("reasoning stream", () => {
     assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
   })
 
-  it("keeps a hidden-reasoning model's reasoning off screen", async () => {
-    const { fetchImpl } = kiro(['{"text":"secret"}{"content":"OK"}'])
+  it("shows reasoning a hidden-reasoning model streams as text after closing its breadcrumb", async () => {
+    const { fetchImpl } = kiro([frames(reasoning("visible"), content("OK"))])
     const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true })(
       "hidden-reasoning-text-token", { reasoning: "high" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.deepEqual(output.content.map((block) => block.type), ["thinking", "thinking", "text"])
+    assert.equal(output.content[1].type === "thinking" && output.content[1].thinking, "visible")
+  })
+
+  // OMP drops custom model fields such as `reasoningHidden`, so the provider passes the ids itself.
+  it("treats a model the provider lists as hidden-reasoning as one", async () => {
+    const { requests, fetchImpl } = kiro([content("OK")])
+    const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true }, {
+      hiddenReasoningModels: ["claude-opus-4-7"],
+    })("listed-hidden-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
-    assert.ok(!JSON.stringify(output.content).includes("secret"))
+    assert.doesNotMatch(requests[0], /thinking_mode/)
+  })
+
+  it("learns that a model hides its reasoning from redacted reasoning", async () => {
+    const { requests, fetchImpl } = kiro([
+      frames(content("OK"), frame("reasoningContentEvent", { redactedContent: "LktUUn5+opaque" })),
+      content("OK"),
+    ])
+    const turn = kiroTurns(fetchImpl, { id: "redacting-model", reasoning: true })
+    const first = await turn("redacted-reasoning-token", { reasoning: "high" })
+    assert.equal(first.stopReason, "stop", first.errorMessage)
+    assert.deepEqual(first.content.map((block) => block.type), ["text"])
+    assert.ok(!JSON.stringify(first.content).includes("LktUUn5"))
+    assert.match(requests[0], /thinking_mode/)
+
+    const second = await turn("redacted-reasoning-token", { reasoning: "high" })
+    assert.deepEqual(second.content.map((block) => block.type), ["thinking", "text"])
+    assert.doesNotMatch(requests[1], /thinking_mode/)
+  })
+
+  it("asks for no reasoning when thinking is off", async () => {
+    const { requests, fetchImpl } = kiro([content("OK")])
+    const output = await kiroTurns(fetchImpl, { reasoning: true })("thinking-off-token", { disableReasoning: true })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.doesNotMatch(requests[0], /thinking_mode/)
   })
 
   it("counts reasoning toward output tokens when Kiro reports no usage", async () => {
-    const { fetchImpl } = kiro([`{"text":"${"x".repeat(400)}"}{"content":"OK"}`])
+    const { fetchImpl } = kiro([frames(reasoning("x".repeat(400)), content("OK"))])
     const output = await streamOnce(fetchImpl, "reasoning-usage-token", { reasoning: "high" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.equal(output.usage.output, 100)
@@ -540,8 +580,7 @@ describe("reasoning stream", () => {
 
   it("treats reasoning as stream activity before the first answer", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout", "Date"] })
-    const encoder = new TextEncoder()
-    let send: (chunk: string) => void = () => { throw new Error("Stream not opened") }
+    let send: (chunk: Uint8Array) => void = () => { throw new Error("Stream not opened") }
     let close = () => {}
     const result = streamOnce((async (input: RequestInfo | URL) => {
       if (new URL(String(input)).pathname === "/List-Available-Profiles") {
@@ -549,7 +588,7 @@ describe("reasoning stream", () => {
       }
       return new Response(new ReadableStream({
         start(controller) {
-          send = (chunk) => controller.enqueue(encoder.encode(chunk))
+          send = (chunk) => controller.enqueue(chunk)
           close = () => controller.close()
         },
       }))
@@ -557,14 +596,14 @@ describe("reasoning stream", () => {
 
     // Reason for 200s, past the 180s first-token timeout, before answering.
     await settle()
-    send('{"text":"Weighing"}')
+    send(reasoning("Weighing"))
     await settle()
     t.mock.timers.tick(100_000)
-    send('{"text":" options"}')
+    send(reasoning(" options"))
     await settle()
     t.mock.timers.tick(100_000)
     await settle()
-    send('{"content":"OK"}')
+    send(content("OK"))
     close()
 
     const output = await result
@@ -579,10 +618,67 @@ describe("reasoning stream", () => {
         return response({ profiles: [{ arn: profileArn }] })
       }
       body = String(init?.body)
-      return new Response('{"content":"OK"}')
+      return eventStream(content("OK"))
     }) as typeof fetch, "max-effort-token", { reasoning: "max" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.match(body, /<max_thinking_length>50000<\/max_thinking_length>/)
+  })
+})
+
+describe("stream errors", () => {
+  const capacity = frame("throttlingError", { message: "I am experiencing high traffic", reason: "INSUFFICIENT_MODEL_CAPACITY" },
+    { ":message-type": "exception", ":exception-type": "ThrottlingException" })
+
+  it("retries a turn Kiro had no capacity for", async () => {
+    const { calls, fetchImpl } = kiro([capacity, content("OK")])
+    const output = await streamOnce(fetchImpl, "capacity-token")
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.equal(calls.inference, 2)
+  })
+
+  it("retries a capacity error that arrives with the first answer text", async () => {
+    const { calls, fetchImpl } = kiro([frames(content("Discarded"), capacity), content("OK")])
+    const output = await streamOnce(fetchImpl, "capacity-same-chunk-token")
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.equal(calls.inference, 2)
+    assert.equal(output.content[0].type === "text" && output.content[0].text, "OK")
+  })
+
+  it("does not retry a capacity error once the answer is on screen", async () => {
+    const { calls, fetchImpl } = kiro([chunked(content("Partial answer"), capacity), content("OK")])
+    const output = await streamOnce(fetchImpl, "capacity-late-token")
+    assert.equal(output.stopReason, "error")
+    assert.match(output.errorMessage ?? "", /INSUFFICIENT_MODEL_CAPACITY/)
+    assert.equal(calls.inference, 1)
+  })
+
+  it("keeps an answer that merely mentions an error code", async () => {
+    const text = "INSUFFICIENT_MODEL_CAPACITY and TEMPORARILY_SUSPENDED are Kiro error codes."
+    const { calls, fetchImpl } = kiro([content(text)])
+    const output = await streamOnce(fetchImpl, "error-code-text-token")
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.equal(calls.inference, 1)
+    assert.equal(output.content[0].type === "text" && output.content[0].text, text)
+  })
+
+  it("reports a rejected request without retrying it", async () => {
+    const invalid = frame("validationError", { message: "Input is too long", reason: "CONTENT_LENGTH_EXCEEDS_THRESHOLD" },
+      { ":message-type": "exception", ":exception-type": "ValidationException" })
+    const { calls, fetchImpl } = kiro([invalid, content("OK")])
+    const output = await streamOnce(fetchImpl, "validation-token")
+    assert.equal(output.stopReason, "error")
+    assert.match(output.errorMessage ?? "", /ValidationException.*Input is too long \(CONTENT_LENGTH_EXCEEDS_THRESHOLD\)/)
+    assert.equal(calls.inference, 1)
+  })
+
+  it("reports a suspension sent in the stream", async () => {
+    const suspended = frame("error", { message: "Account suspended", reason: "TEMPORARILY_SUSPENDED" },
+      { ":message-type": "exception", ":exception-type": "AccessDeniedException" })
+    const { calls, fetchImpl } = kiro([suspended, content("OK")])
+    const output = await streamOnce(fetchImpl, "suspended-stream-token")
+    assert.equal(output.stopReason, "error")
+    assert.match(output.errorMessage ?? "", /suspended/)
+    assert.equal(calls.inference, 1)
   })
 })
 
@@ -598,7 +694,7 @@ describe("cached profile", () => {
         return response({ profiles: [{ arn: profileArn }] })
       }
       inferences += 1
-      return inferences === 1 ? response(firstBody, 403) : new Response('{"content":"OK"}')
+      return inferences === 1 ? response(firstBody, 403) : eventStream(content("OK"))
     }) as typeof fetch)
     assert.equal((await turn("organization-token")).stopReason, "error")
     assert.equal((await turn("organization-token")).stopReason, "stop")
@@ -611,6 +707,22 @@ describe("cached profile", () => {
 
   it("survives a suspension, which says nothing about the profile", async () => {
     assert.equal(await twoTurns({ reason: "TEMPORARILY_SUSPENDED" }), 1)
+  })
+
+  it("forgets the oldest profiles once many tokens have been used", async () => {
+    let lookups = 0
+    const turn = kiroTurns((async (input: RequestInfo | URL) => {
+      if (new URL(String(input)).pathname === "/List-Available-Profiles") {
+        lookups += 1
+        return response({ profiles: [{ arn: profileArn }] })
+      }
+      return eventStream(content("OK"))
+    }) as typeof fetch)
+    for (let i = 0; i <= 32; i++) assert.equal((await turn(`rotated-token-${i}`)).stopReason, "stop")
+    await turn("rotated-token-32")
+    assert.equal(lookups, 33)
+    await turn("rotated-token-0")
+    assert.equal(lookups, 34)
   })
 })
 
@@ -650,7 +762,7 @@ describe("stale token during profile lookup", () => {
         return authorization === "Bearer cli-fresh" ? response({ profiles: [{ arn: profileArn }] }) : response(invalidBearer, 403)
       }
       inferenceTokens.push(authorization)
-      return new Response('{"content":"OK"}')
+      return eventStream(content("OK"))
     }) as typeof fetch, "stale-token")
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(inferenceTokens, ["Bearer cli-fresh"])
@@ -668,7 +780,7 @@ describe("stale token during profile lookup", () => {
         }
         if (new URL(String(input)).pathname === "/List-Available-Profiles") return response({ profiles: [{ arn: profileArn }] })
         inferenceTokens.push(authorization)
-        return authorization === "Bearer cli-fresh" ? new Response('{"content":"OK"}') : response(invalidBearer, 403)
+        return authorization === "Bearer cli-fresh" ? eventStream(content("OK")) : response(invalidBearer, 403)
       }) as typeof fetch, `ksk_revoked_at_${rejectedAt}`)
       assert.equal(output.stopReason, "error", rejectedAt)
       assert.ok(!inferenceTokens.includes("Bearer cli-fresh"), rejectedAt)

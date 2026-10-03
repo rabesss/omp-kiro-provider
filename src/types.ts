@@ -181,6 +181,11 @@ export interface CoreDependencies {
   authPaths: string[]
   homeDir: string
   calculateCost: (model: ModelLike, usage: Usage) => void
+  /**
+   * Ids of models whose reasoning stays server-side. OMP drops custom model
+   * fields such as `reasoningHidden`, so the provider passes them here.
+   */
+  hiddenReasoningModels?: Iterable<string>
 }
 // ---------------------------------------------------------------------------
 // Kiro-specific auth metadata (stored separately from OMP credentials)

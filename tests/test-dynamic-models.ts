@@ -76,7 +76,7 @@ describe("parseLiveModels", () => {
         models: [{ modelId: "from-models" }],
         availableModels: [{ modelId: "from-available" }],
       }),
-      [{ id: "from-models", name: "from-models" }],
+      [{ id: "from-models" }],
     )
   })
 
@@ -107,11 +107,11 @@ describe("parseLiveModels", () => {
       }),
       [
         { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
-        { id: "gpt-5-6-sol", name: "gpt-5-6-sol" },
-        { id: "claude-sonnet-4-6-1m", name: "claude-sonnet-4-6-1m" },
-        { id: "auto", name: "auto" },
-        { id: "qwen3-coder-480b", name: "qwen3-coder-480b" },
-        { id: "claude-sonnet-4-6", name: "claude-sonnet-4-6" },
+        { id: "gpt-5-6-sol" },
+        { id: "claude-sonnet-4-6-1m" },
+        { id: "auto" },
+        { id: "qwen3-coder-480b" },
+        { id: "claude-sonnet-4-6" },
       ],
     )
   })
@@ -149,12 +149,28 @@ describe("parseLiveModels", () => {
     })
     assert.deepEqual(parsed, [
       { id: "claude-sonnet-5", name: "Looks reasoning-capable" },
-      { id: "r1", name: "r1", reasoning: true },
-      { id: "r2", name: "r2", reasoning: false },
-      { id: "r3", name: "r3", reasoning: true },
-      { id: "r4", name: "r4", reasoning: true },
-      { id: "r5", name: "r5" },
-      { id: "r6", name: "r6" },
+      { id: "r1", reasoning: true },
+      { id: "r2", reasoning: false },
+      { id: "r3", reasoning: true },
+      { id: "r4", reasoning: true },
+      { id: "r5" },
+      { id: "r6" },
+    ])
+  })
+
+  it("reads reasoning from an effort setting in the request schema", () => {
+    const effort = { type: "object", properties: { effort: { type: "string", enum: ["low", "high"] } } }
+    const parsed = parseLiveModels({
+      models: [
+        { modelId: "gpt-5.6-sol", additionalModelRequestFieldsSchema: { type: "object", properties: { reasoning: effort } } },
+        { modelId: "claude-opus-5.5", additionalModelRequestFieldsSchema: { type: "object", properties: { output_config: effort } } },
+        { modelId: "plain", additionalModelRequestFieldsSchema: { type: "object", properties: { output_config: { type: "object" } } } },
+      ],
+    })
+    assert.deepEqual(parsed, [
+      { id: "gpt-5-6-sol", reasoning: true },
+      { id: "claude-opus-5-5", reasoning: true },
+      { id: "plain" },
     ])
   })
 
@@ -172,59 +188,74 @@ describe("parseLiveModels", () => {
       ],
     })
     assert.deepEqual(parsed, [
-      { id: "limited", name: "limited", contextWindow: 200_000, maxTokens: 8192 },
-      { id: "bad-limits", name: "bad-limits" },
+      { id: "limited", contextWindow: 200_000, maxTokens: 8192 },
+      { id: "bad-limits" },
     ])
   })
 })
 
 describe("mergeLiveWithOverlay", () => {
-  it("keeps overlay metadata for known ids and conservative defaults for unknown live ids", () => {
-    const liveName = "Live Sonnet Name"
+  it("lists only live models, preferring live metadata and filling gaps from the overlay", () => {
     const merged = mergeLiveWithOverlay(OVERLAY, [
+      { id: "claude-sonnet-5", name: "Live Sonnet Name", reasoning: false, contextWindow: 200_000, maxTokens: 64_000 },
+      { id: "new-live", name: "New Live" },
+      { id: "thinking-live", reasoning: true },
+    ])
+
+    assert.deepEqual(merged, [
       {
         id: "claude-sonnet-5",
-        name: liveName,
+        name: "Live Sonnet Name",
         reasoning: false,
-        contextWindow: 12,
-        maxTokens: 34,
+        input: ["text", "image"],
+        contextWindow: 200_000,
+        maxTokens: 64_000,
+        cost: { ...ZERO_COST },
       },
-      { id: "new-live", name: "New Live" },
-      { id: "thinking-live", name: "Thinking Live", reasoning: true },
+      {
+        id: "new-live",
+        name: "New Live",
+        reasoning: false,
+        input: ["text"],
+        contextWindow: 128_000,
+        maxTokens: 8192,
+        cost: { ...ZERO_COST },
+      },
+      {
+        id: "thinking-live",
+        name: "thinking-live",
+        reasoning: true,
+        input: ["text"],
+        contextWindow: 128_000,
+        maxTokens: 8192,
+        cost: { ...ZERO_COST },
+      },
     ])
-
-    assert.equal(merged[0].name, "Claude Sonnet 5")
-    assert.equal(merged[0].reasoning, true)
-    assert.deepEqual(merged[0].input, ["text", "image"])
-    assert.equal(merged[0].contextWindow, 1_000_000)
-    assert.equal(merged[0].maxTokens, 128_000)
-    assert.equal(merged[1].id, "overlay-only")
-    assert.deepEqual(merged[2], {
-      id: "new-live",
-      name: "New Live",
-      reasoning: false,
-      input: ["text"],
-      contextWindow: 128_000,
-      maxTokens: 8192,
-      cost: { ...ZERO_COST },
-    })
-    assert.equal(merged[3].reasoning, true)
-    assert.equal("reasoningHidden" in merged[3], false)
-    assert.deepEqual(merged[3].input, ["text"])
   })
 
-  it("applies tokenLimits.maxInputTokens as contextWindow on unknowns", () => {
-    const merged = mergeLiveWithOverlay(OVERLAY, [
-      { id: "wide", name: "Wide", contextWindow: 256_000, maxTokens: 16_384 },
+  it("keeps overlay metadata the live catalog leaves out", () => {
+    const [sonnet] = mergeLiveWithOverlay(OVERLAY, [{ id: "claude-sonnet-5" }])
+    assert.deepEqual(sonnet, OVERLAY[0])
+    assert.notEqual(sonnet, OVERLAY[0])
+  })
+
+  it("carries hidden reasoning from the overlay", () => {
+    const overlay: OverlayModel[] = [{ ...OVERLAY[1], id: "hidden", reasoningHidden: true }]
+    assert.equal(mergeLiveWithOverlay(overlay, [{ id: "hidden" }])[0].reasoningHidden, true)
+  })
+
+  it("accepts images for every Claude model", () => {
+    const merged = mergeLiveWithOverlay([], [
+      { id: "claude-new", input: ["text"] },
+      { id: "vision-live", input: ["text", "image"] },
+      { id: "text-live" },
     ])
-    const unknown = merged.find((model) => model.id === "wide")
-    assert.equal(unknown?.contextWindow, 256_000)
-    assert.equal(unknown?.maxTokens, 16_384)
+    assert.deepEqual(merged.map((model) => model.input), [["text", "image"], ["text", "image"], ["text"]])
   })
 
   it("does not mutate overlay rows", () => {
     const overlay = structuredClone(OVERLAY)
-    const merged = mergeLiveWithOverlay(overlay, [{ id: "new-live", name: "New Live" }])
+    const merged = mergeLiveWithOverlay(overlay, [{ id: "claude-sonnet-5" }])
     merged[0].input.push("image")
     merged[0].name = "mutated"
     assert.deepEqual(overlay, OVERLAY)
@@ -232,28 +263,26 @@ describe("mergeLiveWithOverlay", () => {
 })
 
 describe("fetchDynamicKiroModels", () => {
-  it("returns an empty list and does not fetch when the token is blank or missing", async () => {
+  it("fails without fetching when the token is blank or missing", async () => {
     let calls = 0
     const fetchImpl = (async () => {
       calls += 1
       return jsonResponse(200, { models: [{ modelId: "x" }] })
     }) as typeof fetch
 
-    const missing = await fetchDynamicKiroModels({
+    await assert.rejects(fetchDynamicKiroModels({
       apiBase: API_BASE,
       overlay: OVERLAY,
       fetchImpl,
-    })
-    const blank = await fetchDynamicKiroModels({
+    }), /signed-in account/)
+    await assert.rejects(fetchDynamicKiroModels({
       apiKey: "   ",
       apiBase: API_BASE,
       overlay: OVERLAY,
       fetchImpl,
-    })
+    }), /signed-in account/)
 
     assert.equal(calls, 0)
-    assert.deepEqual(missing, [])
-    assert.deepEqual(blank, [])
   })
 
   it("discovers Opus 5.5 through the OAuth account profile on the management API", async () => {
@@ -285,10 +314,10 @@ describe("fetchDynamicKiroModels", () => {
     assert.equal(opus?.name, "Claude Opus 5.5")
     assert.equal(opus?.reasoning, true)
     assert.deepEqual(opus?.input, ["text", "image"])
-    assert.ok(models.some((model) => model.id === "overlay-only"))
+    assert.deepEqual(models.map((model) => model.id), ["claude-opus-5-5"])
   })
 
-  it("returns an empty list on non-2xx, invalid JSON, oversized body, or thrown fetch", async () => {
+  it("fails on non-2xx, invalid JSON, oversized body, or thrown fetch", async () => {
     const cases: Array<typeof fetch> = [
       (async () => jsonResponse(503, { models: [{ modelId: "nope" }] })) as typeof fetch,
       (async () => jsonResponse(200, "{")) as typeof fetch,
@@ -299,28 +328,26 @@ describe("fetchDynamicKiroModels", () => {
     ]
 
     for (const fetchImpl of cases) {
-      const result = await fetchDynamicKiroModels({
+      await assert.rejects(fetchDynamicKiroModels({
         apiKey: "token-1",
         profileArn: PROFILE_ARN,
         apiBase: API_BASE,
         overlay: OVERLAY,
         fetchImpl,
         maxBodyBytes: 64,
-      })
-      assert.deepEqual(result, [])
+      }))
     }
   })
 
-  it("returns an empty list when the actual body exceeds maxBodyBytes", async () => {
-    const result = await fetchDynamicKiroModels({
+  it("fails when the actual body exceeds maxBodyBytes", async () => {
+    await assert.rejects(fetchDynamicKiroModels({
       apiKey: "token-1",
       profileArn: PROFILE_ARN,
       apiBase: API_BASE,
       overlay: OVERLAY,
       maxBodyBytes: 16,
       fetchImpl: (async () => jsonResponse(200, { models: [{ modelId: "too-big", modelName: "Too Big" }] })) as typeof fetch,
-    })
-    assert.deepEqual(result, [])
+    }), /no usable models/)
   })
 
   it("applies overlay metadata when the live catalog uses dotted ids", async () => {
@@ -342,14 +369,14 @@ describe("fetchDynamicKiroModels", () => {
       apiBase: API_BASE,
       overlay,
       fetchImpl: (async () => jsonResponse(200, {
-        models: [{ modelId: "claude-opus-4.7", modelName: "Ignored Live Name" }],
+        models: [{ modelId: "claude-opus-4.7" }],
       })) as typeof fetch,
     })
     assert.deepEqual(result, overlay)
     assert.notEqual(result[0], overlay[0])
   })
 
-  it("merges overlay-only ids with new live ids on success", async () => {
+  it("lists the live models only, without the overlay-only ones", async () => {
     const result = await fetchDynamicKiroModels({
       apiKey: "token-1",
       profileArn: PROFILE_ARN,
@@ -357,16 +384,16 @@ describe("fetchDynamicKiroModels", () => {
       overlay: OVERLAY,
       fetchImpl: (async () => jsonResponse(200, {
         models: [
-          { modelId: "claude-sonnet-5", modelName: "Ignored Live Name" },
+          { modelId: "claude-sonnet-5" },
           { modelId: "brand-new", modelName: "Brand New", tokenLimits: { maxInputTokens: 99_000, maxOutputTokens: 2048 } },
         ],
       })) as typeof fetch,
     })
 
-    assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "overlay-only", "brand-new"])
+    assert.deepEqual(result.map((model) => model.id), ["claude-sonnet-5", "brand-new"])
     assert.equal(result[0].name, "Claude Sonnet 5")
     assert.deepEqual(result[0].input, ["text", "image"])
-    assert.deepEqual(result[2], {
+    assert.deepEqual(result[1], {
       id: "brand-new",
       name: "Brand New",
       reasoning: false,
@@ -380,7 +407,7 @@ describe("fetchDynamicKiroModels", () => {
   it("cancels a streamed body once maxBodyBytes is exceeded", async () => {
     let cancelled = false
     const chunk = new Uint8Array(12)
-    const result = await fetchDynamicKiroModels({
+    await assert.rejects(fetchDynamicKiroModels({
       apiKey: "token-1",
       profileArn: PROFILE_ARN,
       apiBase: API_BASE,
@@ -399,13 +426,12 @@ describe("fetchDynamicKiroModels", () => {
           },
         }),
       })) as typeof fetch,
-    })
+    }))
     assert.equal(cancelled, true)
-    assert.deepEqual(result, [])
   })
 
-  it("returns an empty list when the response body stalls past timeoutMs", async () => {
-    const result = await fetchDynamicKiroModels({
+  it("fails when the response body stalls past timeoutMs", async () => {
+    await assert.rejects(fetchDynamicKiroModels({
       apiKey: "token-1",
       profileArn: PROFILE_ARN,
       apiBase: API_BASE,
@@ -419,12 +445,11 @@ describe("fetchDynamicKiroModels", () => {
           start() {},
         }),
       })) as typeof fetch,
-    })
-    assert.deepEqual(result, [])
+    }))
   })
 
-  it("returns an empty list when the fetch times out", async () => {
-    const result = await fetchDynamicKiroModels({
+  it("fails when the fetch times out", async () => {
+    await assert.rejects(fetchDynamicKiroModels({
       apiKey: "token-1",
       profileArn: PROFILE_ARN,
       apiBase: API_BASE,
@@ -447,13 +472,13 @@ describe("fetchDynamicKiroModels", () => {
         })
         return jsonResponse(200, { models: [{ modelId: "late" }] })
       }) as typeof fetch,
-    })
-    assert.deepEqual(result, [])
+    }))
   })
 
-  it("returns an empty list when the live models array is empty", async () => {
+  // OMP would take an empty result as the whole catalog and drop every Kiro model.
+  it("fails when the live models array is empty", async () => {
     let calls = 0
-    const result = await fetchDynamicKiroModels({
+    await assert.rejects(fetchDynamicKiroModels({
       apiKey: "token-1",
       profileArn: PROFILE_ARN,
       apiBase: API_BASE,
@@ -462,9 +487,8 @@ describe("fetchDynamicKiroModels", () => {
         calls += 1
         return jsonResponse(200, { models: [] })
       }) as typeof fetch,
-    })
+    }), /no usable models/)
     assert.equal(calls, 1)
-    assert.deepEqual(result, [])
   })
 
   it("uses the API key's own profile rather than a saved OAuth profile", async () => {
@@ -567,13 +591,13 @@ describe("fetchDynamicKiroModels", () => {
 
   it("does not publish a live catalog when the account has no accessible profile", async () => {
     for (const payload of [{ profiles: [] }, { profiles: [{}] }, { message: "forbidden" }]) {
-      const models = await fetchDynamicKiroModels({
+      await assert.rejects(fetchDynamicKiroModels({
         apiKey: "token-1",
         apiBase: API_BASE,
         overlay: OVERLAY,
+        env: {},
         fetchImpl: (async () => jsonResponse(200, payload)) as typeof fetch,
-      })
-      assert.deepEqual(models, [])
+      }), /No accessible Kiro profile/)
     }
   })
 })

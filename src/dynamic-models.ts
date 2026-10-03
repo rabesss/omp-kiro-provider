@@ -13,7 +13,7 @@ export type OverlayModel = {
 
 export type LiveModel = {
   id: string
-  name: string
+  name?: string
   reasoning?: boolean
   input?: ("text" | "image")[]
   contextWindow?: number
@@ -63,10 +63,9 @@ export function parseLiveModels(payload: unknown): LiveModel[] | null {
     if (!id || seen.has(id)) continue
     seen.add(id)
 
-    const live: LiveModel = {
-      id,
-      name: nonEmptyString(entry.modelName) ?? nonEmptyString(entry.name) ?? id,
-    }
+    const live: LiveModel = { id }
+    const name = nonEmptyString(entry.modelName) ?? nonEmptyString(entry.name)
+    if (name) live.name = name
     const reasoning = readLiveReasoning(entry)
     if (reasoning !== undefined) live.reasoning = reasoning
     if (Array.isArray(entry.supportedInputTypes)) {
@@ -84,54 +83,58 @@ export function parseLiveModels(payload: unknown): LiveModel[] | null {
   return models
 }
 
+/**
+ * The account's live catalog is the model list: a model Kiro adds appears without a
+ * models.json entry, and one it retires disappears. models.json only fills in what the
+ * catalog leaves out.
+ */
 export function mergeLiveWithOverlay(
   overlay: readonly OverlayModel[],
   live: readonly LiveModel[],
 ): OverlayModel[] {
   const overlayById = new Map(overlay.map((model) => [model.id, model]))
-  const result = copyOverlay(overlay)
-  for (const item of live) {
-    if (overlayById.has(item.id)) continue
-    const unknown: OverlayModel = {
+  return live.map((item) => {
+    const known = overlayById.get(item.id)
+    // Kiro accepts images for every Claude model, whatever the catalog lists.
+    const image = item.input?.includes("image") || known?.input.includes("image") || item.id.startsWith("claude-")
+    return {
       id: item.id,
-      name: item.name || item.id,
-      reasoning: item.reasoning === true,
-      input: item.input ? [...item.input] : ["text"],
-      contextWindow: item.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
-      maxTokens: item.maxTokens ?? DEFAULT_MAX_TOKENS,
+      name: item.name ?? known?.name ?? item.id,
+      reasoning: item.reasoning ?? known?.reasoning ?? false,
+      ...(known?.reasoningHidden ? { reasoningHidden: true } : {}),
+      input: image ? ["text", "image"] : ["text"],
+      contextWindow: item.contextWindow ?? known?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      maxTokens: item.maxTokens ?? known?.maxTokens ?? DEFAULT_MAX_TOKENS,
       cost: { ...ZERO_COST },
     }
-    overlayById.set(item.id, unknown)
-    result.push(unknown)
-  }
-  return result
+  })
 }
 
+/**
+ * Lists the account's models. Fails rather than returning an empty list: OMP takes a
+ * successful result as the whole catalog, while a failure keeps the cached or bundled one.
+ */
 export async function fetchDynamicKiroModels(
   options: FetchDynamicKiroModelsOptions,
 ): Promise<OverlayModel[]> {
   const apiKey = options.apiKey?.trim() ?? ""
-  if (!apiKey) return []
+  if (!apiKey) throw new Error("Kiro model discovery needs a signed-in account")
 
-  const fetchImpl = options.fetchImpl ?? fetch
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
-
-  try {
-    const profileArn = await resolveKiroProfileArn(options)
-    if (!profileArn) return []
-    const { body: payload } = await requestManagement(
-      fetchImpl,
-      buildListAvailableModelsUrl(kiroBaseForRegion(options.apiBase, kiroRegionFromProfileArn(profileArn)), profileArn),
-      apiKey,
-      timeoutMs,
-      maxBodyBytes,
-    )
-    const live = parseLiveModels(payload)
-    return live?.length ? mergeLiveWithOverlay(options.overlay, live) : []
-  } catch {
-    return []
+  const profileArn = await resolveKiroProfileArn(options)
+  if (!profileArn) throw new Error("No accessible Kiro profile found for model discovery")
+  const { status, body, message } = await requestManagement(
+    options.fetchImpl ?? fetch,
+    buildListAvailableModelsUrl(kiroBaseForRegion(options.apiBase, kiroRegionFromProfileArn(profileArn)), profileArn),
+    apiKey,
+    options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
+  )
+  if (status < 200 || status >= 300) {
+    throw new Error(`List-Available-Models returned HTTP ${status}${message ? `: ${message}` : ""}`)
   }
+  const live = parseLiveModels(body)
+  if (!live?.length) throw new Error("List-Available-Models returned no usable models")
+  return mergeLiveWithOverlay(options.overlay, live)
 }
 
 export async function resolveKiroProfileArn(
@@ -239,14 +242,6 @@ function managementBases(apiBase: string): string[] {
     .filter((region) => region !== match[2].toLowerCase())
     .map((region) => `${match[1]}${region}${match[3]}`)
   return [primary, ...others]
-}
-
-function copyOverlay(overlay: readonly OverlayModel[]): OverlayModel[] {
-  return overlay.map((model) => ({
-    ...model,
-    input: [...model.input],
-    cost: { ...model.cost },
-  }))
 }
 
 type ManagementResponse = { status: number; body: unknown; message?: string }
@@ -404,9 +399,12 @@ function readLiveReasoning(item: Record<string, unknown>): boolean | undefined {
   if (typeof item.supportsThinking === "boolean") return item.supportsThinking
   const capabilities = item.capabilities
   if (isRecord(capabilities) && typeof capabilities.thinking === "boolean") return capabilities.thinking
-  // Kiro's management catalog advertises thinking through the per-model request schema.
+  // Kiro's management catalog advertises thinking through the per-model request schema:
+  // a `thinking` object, or an effort setting under `reasoning` (GPT) or `output_config` (Claude).
   const schema = item.additionalModelRequestFieldsSchema
-  if (isRecord(schema) && isRecord(schema.properties) && isRecord(schema.properties.thinking)
-    && schema.properties.thinking.type === "object") return true
-  return undefined
+  const fields = isRecord(schema) && isRecord(schema.properties) ? schema.properties : undefined
+  if (!fields) return undefined
+  if (isRecord(fields.thinking) && fields.thinking.type === "object") return true
+  const hasEffort = (field: unknown) => isRecord(field) && isRecord(field.properties) && isRecord(field.properties.effort)
+  return hasEffort(fields.reasoning) || hasEffort(fields.output_config) ? true : undefined
 }
