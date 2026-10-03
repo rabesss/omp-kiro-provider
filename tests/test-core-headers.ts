@@ -8,7 +8,7 @@ const OAUTH_TOKEN = "aoa_example_oauth_token"
 
 describe("buildKiroHeaders", () => {
   it("marks ksk_ credentials with TokenType: API_KEY", () => {
-    const headers = buildKiroHeaders(API_KEY, true, false)
+    const headers = buildKiroHeaders(API_KEY)
 
     assert.equal(headers["TokenType"], "API_KEY")
     assert.equal(headers.Authorization, `Bearer ${API_KEY}`)
@@ -20,7 +20,7 @@ describe("buildKiroHeaders", () => {
   })
 
   it("omits TokenType for OAuth credentials", () => {
-    const headers = buildKiroHeaders(OAUTH_TOKEN, false, true)
+    const headers = buildKiroHeaders(OAUTH_TOKEN)
 
     assert.equal("TokenType" in headers, false)
     assert.equal(headers.Authorization, `Bearer ${OAUTH_TOKEN}`)

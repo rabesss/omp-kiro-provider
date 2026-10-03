@@ -39,6 +39,22 @@ describe("buildKiroPayload", () => {
     assert.equal(userInput.origin, "KIRO_CLI")
   })
 
+  it("gives the synthetic leading user message the real model id", () => {
+    const ctx: ContextLike = {
+      messages: [
+        { role: "assistant", content: [{ type: "text", text: "earlier answer" }] },
+        { role: "user", content: "Hello" },
+      ],
+      tools: [],
+    }
+
+    const payload = buildKiroPayload("claude-opus-5-5", ctx)
+
+    const history = payload.conversationState.history as Array<{ userInputMessage?: Record<string, unknown> }>
+    assert.equal(history[0].userInputMessage?.content, "(continued)")
+    assert.equal(history[0].userInputMessage?.modelId, "claude-opus-5.5")
+  })
+
   it("converts new dotted Kiro model versions without changing suffixes", () => {
     const ctx: ContextLike = { messages: [{ role: "user", content: "Hello" }], tools: [] }
 

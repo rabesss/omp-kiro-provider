@@ -7,7 +7,7 @@
  * - INSUFFICIENT_MODEL_CAPACITY inner retry (common on free tier)
  * - First-token timeout (180s) + idle stream timeout (300s)
  * - Empty response detection with retry
- * - profileArn conditional omission for Builder ID
+ * - Account profile resolution for OAuth and API keys
  * - Ban detection (TEMPORARILY_SUSPENDED) in HTTP errors AND stream content
  * - Live event emission with retry buffering before the first visible delta
  */
@@ -35,6 +35,8 @@ import { buildKiroPayload, resolveToolName } from "./converters.ts"
 import { AwsEventStreamParser } from "./eventstream.ts"
 import { ThinkingTagParser } from "./thinking-parser.ts"
 import { parseBracketToolCalls } from "./bracket-tool-parser.ts"
+import { kiroBaseForRegion, kiroRegionFromProfileArn, resolveKiroProfileArn } from "./dynamic-models.ts"
+import { isKiroApiKey, kiroTokenTypeHeaders } from "./auth/token-type.ts"
 
 export * from "./converters.ts"
 export * from "./eventstream.ts"
@@ -170,54 +172,16 @@ function resyncCliToken(): string | undefined {
   }
   return tryReadCliToken()
 }
-// ---------------------------------------------------------------------------
-// Dynamic profileArn resolution via ListAvailableProfiles (mikeyobrien/hongyilyu pattern)
-// ---------------------------------------------------------------------------
-const profileArnCache = new Map<string, string>()
-async function resolveProfileArn(
-  accessToken: string,
-  endpoint: string,
-  fetchImpl: typeof fetch,
-): Promise<string | undefined> {
-  const cached = profileArnCache.get(endpoint)
-  if (cached !== undefined) return cached
-  try {
-    const ep = new URL(endpoint)
-    ep.pathname = ep.pathname.replace(/\/generateAssistantResponse\/?$/, "/")
-    ep.search = ""
-    ep.hash = ""
-    const r = await fetchImpl(ep.toString(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-amz-json-1.0",
-        Authorization: `Bearer ${accessToken}`,
-        "X-Amz-Target": "AmazonCodeWhispererService.ListAvailableProfiles",
-      },
-      body: "{}",
-    })
-    if (!r.ok) return undefined
-    const j = (await r.json()) as { profiles?: Array<{ arn?: string }> }
-    const arn = j.profiles?.find((p) => p.arn)?.arn
-    if (arn) profileArnCache.set(endpoint, arn)
-    return arn
-  } catch {
-    return undefined
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Build headers for Kiro API request
 // ---------------------------------------------------------------------------
 
-export function buildKiroHeaders(
-  accessToken: string,
-  isApiKey: boolean,
-  _isIdc: boolean,
-): Record<string, string> {
+export function buildKiroHeaders(accessToken: string): Record<string, string> {
   // Impersonate Kiro CLI (rust SDK) — matches mikeyobrien, hongyilyu, MasuRii
   const mid = randomUUID().replace(/-/g, "")
   const ua = `aws-sdk-rust/1.0.0 ua/2.1 os/other lang/rust api/codewhispererstreaming#1.28.3 m/E app/AmazonQ-For-CLI md/appVersion-1.28.3-${mid}`
-  const headers: Record<string, string> = {
+  return {
     "Authorization": `Bearer ${accessToken}`,
     "Content-Type": "application/x-amz-json-1.0",
     "Accept": "application/json",
@@ -228,12 +192,8 @@ export function buildKiroHeaders(
     "x-amzn-kiro-agent-mode": "vibe",
     "amz-sdk-invocation-id": randomUUID(),
     "amz-sdk-request": "attempt=1; max=1",
+    ...kiroTokenTypeHeaders(accessToken),
   }
-  // Kiro API keys (ksk_) must be declared as such — same as kiro-cli and kirocc.
-  // Without it the API treats the bearer as an OAuth token and rejects the call
-  // (403 "bearer token invalid" / 400 "profileArn is required for this request").
-  if (isApiKey) headers["TokenType"] = "API_KEY"
-  return headers
 }
 // ---------------------------------------------------------------------------
 // Stream factory
@@ -241,6 +201,8 @@ export function buildKiroHeaders(
 
 export function createStreamKiro(deps: CoreDependencies) {
   const apiBase = deps.apiBase
+  const managementBase = deps.managementBase ?? apiBase.replace(/^(https?:\/\/)runtime\./, "$1management.")
+  const profileArnCache = new Map<string, string>()
   const fetchImpl = deps.fetchImpl ?? fetch
   const cwd = deps.cwd ?? (() => process.cwd())
   const now = deps.now ?? (() => Date.now())
@@ -407,10 +369,6 @@ export function createStreamKiro(deps: CoreDependencies) {
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
       let releaseKiroStreamGate: (() => void) | undefined
 
-      // Detect auth method for header selection
-      const isApiKey = apiKey.startsWith("ksk_")
-      const isIdc = !isApiKey
-
       // Read auth metadata to route profileArn correctly
       const metaRaw = (() => {
         try {
@@ -419,7 +377,6 @@ export function createStreamKiro(deps: CoreDependencies) {
           return JSON.parse(readFileSync(p, "utf-8")) as { method?: string; profileArn?: string; region?: string }
         } catch { return null }
       })()
-      const authMethod = metaRaw?.method ?? "social"
 
       const abortUpstream = () => {
         if (!controller.signal.aborted) controller.abort()
@@ -615,19 +572,42 @@ export function createStreamKiro(deps: CoreDependencies) {
       }
 
       try {
-        // Resolve profileArn: only needed for Kiro social/OIDC sessions.
-        // Builder ID (device code flow) doesn't support profileArn or ListAvailableProfiles —
-        // including either causes a 403. Skip entirely when no profileArn in metadata.
-        let profileArn: string | undefined
-        if (metaRaw?.profileArn) {
-          profileArn = metaRaw.profileArn
-        } else if (authMethod === "social" && !isApiKey) {
-          // Only resolve profileArn for social (Google/GitHub) auth.
-          // Builder ID / IDC tokens get 403 from ListAvailableProfiles.
-          // API keys are rejected outright ("API key authentication is not
-          // supported for this operation") and need no profileArn.
-          profileArn = await resolveProfileArn(apiKey, `${apiBase}/generateAssistantResponse`, fetchImpl)
+        let profileArn = profileArnCache.get(apiKey)
+        if (!profileArn) {
+          const lookupProfile = (token: string) => resolveKiroProfileArn({
+            apiKey: token,
+            apiBase: managementBase,
+            fetchImpl,
+            profileArn: metaRaw?.profileArn,
+            env: deps.env,
+            signal: options?.signal,
+          })
+          try {
+            try {
+              profileArn = await lookupProfile(apiKey)
+            } catch (lookupError: unknown) {
+              // A stale token fails here before inference could resync it, so resync now.
+              // A rejected API key fails as itself instead of switching to the CLI identity.
+              if (options?.signal?.aborted || isKiroApiKey(apiKey)
+                || !String(lookupError).includes("bearer token included in the request is invalid")) {
+                throw lookupError
+              }
+              const refreshedCliToken = resyncCliToken()
+              if (!refreshedCliToken) throw lookupError
+              apiKey = refreshedCliToken
+              profileArn = await lookupProfile(apiKey)
+            }
+          } catch (resolveError: unknown) {
+            if (options?.signal?.aborted) throw resolveError
+            const reason = resolveError instanceof Error ? resolveError.message : String(resolveError)
+            throw new Error(`Kiro profile lookup failed (${managementBase}): ${reason}`)
+          }
+          if (options?.signal?.aborted) throw abortError()
+          if (!profileArn) throw new Error("No accessible Kiro profile found for this account.")
+          profileArnCache.set(apiKey, profileArn)
         }
+        // The runtime rejects a profile from another region, so inference follows the profile.
+        const runtimeBase = kiroBaseForRegion(apiBase, kiroRegionFromProfileArn(profileArn))
 
         // --- Thinking / reasoning mode ---
         // Inject <thinking_mode> into system prompt so the model produces <thinking> tags.
@@ -650,13 +630,14 @@ export function createStreamKiro(deps: CoreDependencies) {
         }
         const body = buildKiroPayload(model.id, contextForPayload, profileArn, undefined, model.contextWindow)
 
-        // Build headers — strip Authorization from user-supplied headers to prevent OAuth bypass
-        const userHeaders = { ...options?.headers }
-        delete userHeaders["Authorization"]
-        delete userHeaders["authorization"]
+        // Build headers — the credential headers come only from the credential, never from
+        // user-supplied headers, so neither the token nor its declared type can be overridden.
+        const userHeaders = Object.fromEntries(
+          Object.entries(options?.headers ?? {}).filter(([name]) => !/^(authorization|tokentype)$/i.test(name)),
+        )
 
         const reqHeaders: Record<string, string> = {
-          ...buildKiroHeaders(apiKey, isApiKey, isIdc),
+          ...buildKiroHeaders(apiKey),
           ...userHeaders,
         }
 
@@ -723,7 +704,7 @@ export function createStreamKiro(deps: CoreDependencies) {
               : timeoutController.signal
             try {
               response = await raceAbort(
-                fetchImpl(`${apiBase}/generateAssistantResponse`, {
+                fetchImpl(`${runtimeBase}/generateAssistantResponse`, {
                   method: "POST",
                   headers: reqHeaders,
                   body: JSON.stringify(body),
@@ -734,16 +715,19 @@ export function createStreamKiro(deps: CoreDependencies) {
             } finally {
               clearTimeout(timeoutId)
             }
-            // Don't retry on ban detection; bust profileArn cache on 403
+            // Don't retry on ban detection. Any other 403 can mean the cached profile is gone.
             if (response.status === 403) {
-              profileArnCache.delete(`${apiBase}/generateAssistantResponse`)
               const peekBody = await response.clone().text().catch(() => "")
               if (peekBody.includes("TEMPORARILY_SUSPENDED")) break
-              if (!cliIdentityResynced && peekBody.includes("bearer token included in the request is invalid")) {
+              profileArnCache.delete(apiKey)
+              if (!isKiroApiKey(apiKey) && !cliIdentityResynced && peekBody.includes("bearer token included in the request is invalid")) {
                 const refreshedCliToken = resyncCliToken()
                 if (refreshedCliToken) {
                   apiKey = refreshedCliToken
                   reqHeaders.Authorization = `Bearer ${apiKey}`
+                  // The type declared for the previous credential must not carry over.
+                  delete reqHeaders.TokenType
+                  Object.assign(reqHeaders, kiroTokenTypeHeaders(apiKey))
                   cliIdentityResynced = true
                   continue
                 }

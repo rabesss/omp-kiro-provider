@@ -9,7 +9,7 @@
  * 1. kiro-cli SQLite database (preferred — always fresh, actively maintained)
  * 2. Kiro IDE ~/.aws/sso/cache/kiro-auth-token-cli.json or kiro-auth-token.json (fallback)
  * 3. API Key (ksk_xxx)
- * 4. OIDC device code flow (Builder ID browser login)
+ * 4. OIDC device code flow (Builder ID or IAM Identity Center browser login)
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
@@ -54,15 +54,54 @@ function writeMeta(meta: KiroAuthMeta): void {
 // OMP-compatible credentials shape
 // ---------------------------------------------------------------------------
 
+/**
+ * Every Kiro login shares one identity so OMP replaces the previous credential instead of adding
+ * another. OMP keeps a single model catalog per provider, and accounts on different plans expose
+ * different models, so several accounts would make the catalog depend on which one answered.
+ */
+const KIRO_ACCOUNT_ID = "kiro"
+
 interface OMPCredentials {
   access: string
   refresh: string
   expires: number
+  accountId?: string
+  method?: string
+  region?: string
+  clientId?: string
+  clientSecret?: string
+  profileArn?: string
+  /** Taken from Kiro CLI or IDE, which keep refreshing the same token lineage. */
+  reused?: boolean
+}
+
+/** OMP stores whatever the provider returns, so the refresh method travels with each credential. */
+function embedMeta(creds: OMPCredentials, meta: KiroAuthMeta): OMPCredentials {
+  return {
+    ...creds,
+    accountId: KIRO_ACCOUNT_ID,
+    method: meta.method,
+    ...(meta.region ? { region: meta.region } : {}),
+    ...(meta.clientId ? { clientId: meta.clientId } : {}),
+    ...(meta.clientSecret ? { clientSecret: meta.clientSecret } : {}),
+    ...(meta.profileArn ? { profileArn: meta.profileArn } : {}),
+  }
+}
+
+function metaOf(creds: OMPCredentials): KiroAuthMeta | undefined {
+  if (!creds.method) return undefined
+  return {
+    method: creds.method,
+    region: creds.region,
+    clientId: creds.clientId,
+    clientSecret: creds.clientSecret,
+    profileArn: creds.profileArn,
+  }
 }
 
 function credentialsFromApiKey(apiKey: string): OMPCredentials {
   writeMeta({ method: "apikey" })
-  return { access: apiKey, refresh: apiKey, expires: Date.now() + FAR_FUTURE_MS }
+  return embedMeta({ access: apiKey, refresh: apiKey, expires: Date.now() + FAR_FUTURE_MS }, { method: "apikey" })
 }
 
 /** Remove terminal paste wrappers, surrounding whitespace, control chars. */
@@ -278,15 +317,16 @@ function toFull(creds: OMPCredentials, meta: KiroAuthMeta): FullCredentials {
 }
 
 function fromFull(full: FullCredentials): { creds: OMPCredentials; meta: KiroAuthMeta } {
+  const meta: KiroAuthMeta = {
+    method: full.method,
+    clientId: full.clientId,
+    clientSecret: full.clientSecret,
+    region: full.region,
+    profileArn: full.profileArn,
+  }
   return {
-    creds: { access: full.access, refresh: full.refresh, expires: full.expiresAt },
-    meta: {
-      method: full.method,
-      clientId: full.clientId,
-      clientSecret: full.clientSecret,
-      region: full.region,
-      profileArn: full.profileArn,
-    },
+    creds: embedMeta({ access: full.access, refresh: full.refresh, expires: full.expiresAt }, meta),
+    meta,
   }
 }
 
@@ -295,7 +335,12 @@ function fromFull(full: FullCredentials): { creds: OMPCredentials; meta: KiroAut
 // ---------------------------------------------------------------------------
 
 function tryAutoDetect(): { creds: OMPCredentials; meta: KiroAuthMeta } | null {
-  return tryReadCliCredentials() ?? tryReadIdeToken()
+  const cli = tryReadCliCredentials()
+  if (cli && cli.creds.expires > Date.now()) return cli
+  // An installed kiro-cli with an expired token must not hide a live IDE token.
+  const ide = tryReadIdeToken()
+  if (ide && ide.creds.expires > Date.now()) return ide
+  return cli ?? ide
 }
 
 // ---------------------------------------------------------------------------
@@ -312,12 +357,13 @@ export async function login(callbacks: import("./types.ts").OAuthLoginCallbacks)
 
   const choice = await callbacks.onPrompt({
     message:
-      "Choose login method:\n" +
-      `1. Reuse existing login (kiro-cli or Kiro IDE)${existing ? " [DETECTED]" : ""}\n` +
-      "2. Paste API Key (ksk_xxx)\n" +
-      "3. Paste Refresh Token\n" +
-      "4. Browser Login (Builder ID)\n" +
-      "Enter 1-4:",
+      "Sign in to Kiro\n\n" +
+      `  1  Reuse existing login (Kiro CLI or IDE)${existing ? "  · detected" : ""}\n` +
+      "  2  API key (ksk_…)\n" +
+      "  3  Refresh token\n" +
+      "  4  AWS Builder ID  · browser\n" +
+      "  5  Your organization (IAM Identity Center)  · browser\n\n" +
+      "Choose an option:",
   })
 
   switch (choice.trim()) {
@@ -352,20 +398,20 @@ export async function login(callbacks: import("./types.ts").OAuthLoginCallbacks)
         const refreshed = await refreshKiroToken(toFull(detected.creds, detected.meta))
         const result = fromFull(refreshed)
         writeMeta(result.meta)
-        return result.creds
+        return { ...result.creds, reused: true }
       }
-      return detected.creds
+      return { ...embedMeta(detected.creds, detected.meta), reused: true }
     }
 
     case "2": {
-      const raw = await callbacks.onPrompt({ message: "Paste your Kiro API Key (ksk_xxx):" })
+      const raw = await callbacks.onPrompt({ message: "Paste your Kiro API key:", placeholder: "ksk_…", secret: true })
       const apiKey = sanitizeApiKey(raw)
       if (!apiKey) throw new Error("No API key provided")
       return credentialsFromApiKey(apiKey)
     }
 
     case "3": {
-      const raw = await callbacks.onPrompt({ message: "Paste your refresh token:" })
+      const raw = await callbacks.onPrompt({ message: "Paste your refresh token:", secret: true })
       const refreshToken = sanitizeApiKey(raw)
       if (!refreshToken) throw new Error("No refresh token provided")
 
@@ -373,11 +419,36 @@ export async function login(callbacks: import("./types.ts").OAuthLoginCallbacks)
       const region = regionRaw.trim() || DEFAULT_REGION
 
       writeMeta({ method: "social", region })
-      return { access: "", refresh: refreshToken, expires: 0 }
+      return embedMeta({ access: "", refresh: refreshToken, expires: 0 }, { method: "social", region })
     }
 
     case "4": {
       const full = await runDeviceCodeFlow(callbacks)
+      const result = fromFull(full)
+      writeMeta(result.meta)
+      return result.creds
+    }
+
+    case "5": {
+      const startUrl = (await callbacks.onPrompt({
+        message: "IAM Identity Center start URL:",
+        placeholder: "https://your-organization.awsapps.com/start",
+      })).trim()
+      let validStartUrl = false
+      try { validStartUrl = new URL(startUrl).protocol === "https:" } catch { /* invalid URL */ }
+      if (!validStartUrl) {
+        throw new Error("IAM Identity Center start URL must be an HTTPS URL.")
+      }
+      const region = (await callbacks.onPrompt({
+        message: `IAM Identity Center region (default: ${DEFAULT_REGION}):`,
+        placeholder: DEFAULT_REGION,
+        allowEmpty: true,
+      })).trim().toLowerCase() || DEFAULT_REGION
+      if (!/^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(region)) {
+        throw new Error("Enter the AWS region of your IAM Identity Center instance.")
+      }
+      callbacks.onProgress?.(`Starting organization sign-in in ${region}...`)
+      const full = await runDeviceCodeFlow(callbacks, region, startUrl)
       const result = fromFull(full)
       writeMeta(result.meta)
       return result.creds
@@ -393,21 +464,29 @@ export async function login(callbacks: import("./types.ts").OAuthLoginCallbacks)
 // ---------------------------------------------------------------------------
 
 export async function refreshToken(credentials: OMPCredentials): Promise<OMPCredentials> {
-  // For IDC auth, try to re-read from kiro-cli first (it manages its own refresh)
-  const cliCreds = tryReadCliCredentials()
-  if (cliCreds && cliCreds.creds.expires > Date.now()) {
-    writeMeta(cliCreds.meta)
-    return cliCreds.creds
+  // Credentials saved by this version carry their own refresh method. The shared sidecar only
+  // describes the most recent login, so it is a fallback for credentials saved before that.
+  const own = metaOf(credentials)
+
+  // Kiro CLI and IDE refresh (and rotate) the same token themselves, so credentials reused from
+  // either defer to the live state first. Credentials saved before metadata was embedded keep the
+  // original behavior, which only consulted the CLI.
+  if (!own || credentials.reused) {
+    const live = credentials.reused ? tryAutoDetect() : tryReadCliCredentials()
+    if (live && live.creds.expires > Date.now()) {
+      writeMeta(live.meta)
+      return { ...embedMeta(live.creds, live.meta), reused: true }
+    }
   }
 
-  // Fall back to stored metadata + manual refresh
-  const meta = readMeta()
+  const meta = own ?? readMeta()
   if (!meta) throw new Error("No Kiro auth metadata found. Run /login first.")
 
   const refreshed = await refreshKiroToken(toFull(credentials, meta))
   const result = fromFull(refreshed)
+  // getStoredProfileArn() reads the sidecar, so a renewed profile ARN must reach it too.
   writeMeta(result.meta)
-  return result.creds
+  return credentials.reused ? { ...result.creds, reused: true } : result.creds
 }
 
 // ---------------------------------------------------------------------------

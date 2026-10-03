@@ -1,3 +1,5 @@
+import { isKiroApiKey, kiroTokenTypeHeaders } from "./auth/token-type.ts"
+
 export type OverlayModel = {
   id: string
   name: string
@@ -13,6 +15,7 @@ export type LiveModel = {
   id: string
   name: string
   reasoning?: boolean
+  input?: ("text" | "image")[]
   contextWindow?: number
   maxTokens?: number
 }
@@ -25,24 +28,21 @@ export type FetchDynamicKiroModelsOptions = {
   timeoutMs?: number
   maxBodyBytes?: number
   profileArn?: string
+  env?: Record<string, string | undefined>
+  signal?: AbortSignal
 }
 
+export const BUILDER_ID_PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 const DEFAULT_TIMEOUT_MS = 10_000
 const DEFAULT_MAX_BODY_BYTES = 1_048_576
 const DEFAULT_CONTEXT_WINDOW = 128_000
 const DEFAULT_MAX_TOKENS = 8192
 
-export function buildListAvailableModelsUrl(
-  apiBase: string,
-  origin = "AI_EDITOR",
-  profileArn?: string,
-): string {
-  const url = new URL(`${apiBase.replace(/\/+$/, "")}/ListAvailableModels`)
-  url.searchParams.set("origin", origin)
-  if (profileArn !== undefined && profileArn !== "") {
-    url.searchParams.set("profileArn", profileArn)
-  }
+function buildListAvailableModelsUrl(apiBase: string, profileArn: string): string {
+  const url = new URL(`${apiBase.replace(/\/+$/, "")}/List-Available-Models`)
+  url.searchParams.set("origin", "KIRO_CLI")
+  url.searchParams.set("profileArn", profileArn)
   return url.toString()
 }
 
@@ -69,6 +69,9 @@ export function parseLiveModels(payload: unknown): LiveModel[] | null {
     }
     const reasoning = readLiveReasoning(entry)
     if (reasoning !== undefined) live.reasoning = reasoning
+    if (Array.isArray(entry.supportedInputTypes)) {
+      live.input = entry.supportedInputTypes.some((type) => String(type).toUpperCase() === "IMAGE") ? ["text", "image"] : ["text"]
+    }
     const limits = isRecord(entry.tokenLimits) ? entry.tokenLimits : undefined
     if (limits) {
       const contextWindow = positiveInt(limits.maxInputTokens)
@@ -93,7 +96,7 @@ export function mergeLiveWithOverlay(
       id: item.id,
       name: item.name || item.id,
       reasoning: item.reasoning === true,
-      input: ["text"],
+      input: item.input ? [...item.input] : ["text"],
       contextWindow: item.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       maxTokens: item.maxTokens ?? DEFAULT_MAX_TOKENS,
       cost: { ...ZERO_COST },
@@ -115,30 +118,127 @@ export async function fetchDynamicKiroModels(
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
 
   try {
-    const first = await requestCatalog(
+    const profileArn = await resolveKiroProfileArn(options)
+    if (!profileArn) return []
+    const { body: payload } = await requestManagement(
       fetchImpl,
-      buildListAvailableModelsUrl(options.apiBase),
+      buildListAvailableModelsUrl(kiroBaseForRegion(options.apiBase, kiroRegionFromProfileArn(profileArn)), profileArn),
       apiKey,
-      options.overlay,
       timeoutMs,
       maxBodyBytes,
     )
-    if (first.kind === "ok") return first.models ?? []
-    if (options.profileArn === undefined || options.profileArn === "") return []
-
-    const retry = await requestCatalog(
-      fetchImpl,
-      buildListAvailableModelsUrl(options.apiBase, "AI_EDITOR", options.profileArn),
-      apiKey,
-      options.overlay,
-      timeoutMs,
-      maxBodyBytes,
-    )
-    if (retry.kind === "ok") return retry.models ?? []
-    return []
+    const live = parseLiveModels(payload)
+    return live?.length ? mergeLiveWithOverlay(options.overlay, live) : []
   } catch {
     return []
   }
+}
+
+export async function resolveKiroProfileArn(
+  options: Omit<FetchDynamicKiroModelsOptions, "overlay">,
+): Promise<string | undefined> {
+  const apiKey = options.apiKey?.trim() ?? ""
+  if (!apiKey) return undefined
+  const isApiKey = isKiroApiKey(apiKey)
+  if (!isApiKey) {
+    const override = nonEmptyString((options.env ?? process.env).KIRO_PROFILE_ARN)
+    if (override) return override
+    if (options.profileArn?.trim()) return options.profileArn.trim()
+  }
+  if (isApiKey) {
+    const { status, body: profile, message } = await requestManagement(
+      options.fetchImpl ?? fetch,
+      `${kiroBaseForRegion(options.apiBase, API_KEY_REGION)}/`,
+      apiKey,
+      options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
+      { "Content-Type": "application/x-amz-json-1.0", "X-Amz-Target": "AmazonCodeWhispererService.GetProfile" },
+      options.signal,
+    )
+    // A rejected key is an auth failure, not an account without a profile.
+    if (status < 200 || status >= 300) throw new Error(`GetProfile returned HTTP ${status}${message ? `: ${message}` : ""}`)
+    return isRecord(profile) && isRecord(profile.profile) ? nonEmptyString(profile.profile.arn) : undefined
+  }
+
+  // A profile can live in a canonical region other than the caller's, so every canonical region is
+  // probed before giving up. Only when all of them answer "not authorized" is the token a Builder ID
+  // one; a single region answering that way may just mean the profile is elsewhere. A region that
+  // fails or answers with another error does not end the probe, but its error is reported when no
+  // region yields a profile, rather than guessing the Builder ID profile.
+  let everyRegionNotAuthorized = true
+  let probeError: unknown
+  for (const base of managementBases(options.apiBase)) {
+    let response: ManagementResponse
+    try {
+      response = await requestManagement(
+        options.fetchImpl ?? fetch,
+        `${base}/List-Available-Profiles`,
+        apiKey,
+        options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
+        { "Content-Type": "application/json" },
+        options.signal,
+      )
+    } catch (error) {
+      if (options.signal?.aborted) throw error
+      everyRegionNotAuthorized = false
+      probeError = error
+      continue
+    }
+    const { status, body: profile, message } = response
+    if (status === 403 && message?.toLowerCase().includes("not authorized to access this feature")) continue
+    everyRegionNotAuthorized = false
+    if (status < 200 || status >= 300) {
+      probeError = new Error(`List-Available-Profiles returned HTTP ${status}${message ? `: ${message}` : ""}`)
+      continue
+    }
+    if (!isRecord(profile)) continue
+    // Organization accounts may expose several profiles; the first one listed is used.
+    const profiles = Array.isArray(profile.profiles) ? profile.profiles : []
+    for (const entry of profiles) {
+      if (!isRecord(entry)) continue
+      const profileArn = nonEmptyString(entry.arn)
+      if (profileArn) return profileArn
+    }
+  }
+  // Builder ID tokens are not allowed to list profiles; they all share one public profile.
+  if (everyRegionNotAuthorized) return BUILDER_ID_PROFILE_ARN
+  if (probeError) throw probeError
+  return undefined
+}
+
+const CANONICAL_MANAGEMENT_REGIONS = ["us-east-1", "eu-central-1"] as const
+/** Kiro issues API keys against the us-east-1 control plane, so their profile is resolved there. */
+const API_KEY_REGION = "us-east-1"
+const KIRO_HOST = /^(https:\/\/(?:management|runtime)\.)([a-z0-9-]+)(\.kiro\.dev)$/i
+
+/** The region a profile ARN (`arn:aws:codewhisperer:<region>:...`) belongs to. */
+export function kiroRegionFromProfileArn(profileArn: string | undefined): string | undefined {
+  const region = profileArn?.split(":")[3]?.toLowerCase()
+  return region && /^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(region) ? region : undefined
+}
+
+/**
+ * A profile belongs to one region, and model discovery and inference must go to that region, so a
+ * `management.<region>.kiro.dev` or `runtime.<region>.kiro.dev` base follows it. Any other base is
+ * used as given.
+ */
+export function kiroBaseForRegion(base: string, region: string | undefined): string {
+  const trimmed = base.replace(/\/+$/, "")
+  const match = region ? KIRO_HOST.exec(trimmed) : null
+  return match ? `${match[1]}${region}${match[3]}` : trimmed
+}
+
+// The caller's management base first, then the other canonical regions. A custom base that is not a
+// `management.<region>.kiro.dev` host is used as given and never rewritten.
+function managementBases(apiBase: string): string[] {
+  const primary = apiBase.replace(/\/+$/, "")
+  const match = /^(https:\/\/management\.)([a-z0-9-]+)(\.kiro\.dev)$/i.exec(primary)
+  if (!match) return [primary]
+  const others = CANONICAL_MANAGEMENT_REGIONS
+    .filter((region) => region !== match[2].toLowerCase())
+    .map((region) => `${match[1]}${region}${match[3]}`)
+  return [primary, ...others]
 }
 
 function copyOverlay(overlay: readonly OverlayModel[]): OverlayModel[] {
@@ -149,47 +249,47 @@ function copyOverlay(overlay: readonly OverlayModel[]): OverlayModel[] {
   }))
 }
 
-async function requestCatalog(
+type ManagementResponse = { status: number; body: unknown; message?: string }
+
+async function requestManagement(
   fetchImpl: typeof fetch,
   url: string,
   apiKey: string,
-  overlay: readonly OverlayModel[],
   timeoutMs: number,
   maxBodyBytes: number,
-): Promise<{ kind: "ok"; models: OverlayModel[] | null } | { kind: "http" }> {
+  postHeaders?: Record<string, string>,
+  outerSignal?: AbortSignal,
+): Promise<ManagementResponse> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const onOuterAbort = () => controller.abort()
+  if (outerSignal?.aborted) controller.abort()
+  else outerSignal?.addEventListener("abort", onOuterAbort, { once: true })
   try {
     const response = await fetchImpl(url, {
-      method: "GET",
+      method: postHeaders ? "POST" : "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
-        ...(apiKey.startsWith("ksk_") ? { TokenType: "API_KEY" } : {}),
+        ...kiroTokenTypeHeaders(apiKey),
+        ...postHeaders,
       },
+      ...(postHeaders ? { body: "{}" } : {}),
       signal: controller.signal,
     })
-    if (!is2xx(response)) return { kind: "http" }
-    return {
-      kind: "ok",
-      models: await modelsFromResponse(response, overlay, maxBodyBytes, controller.signal),
+    if (!is2xx(response)) {
+      // Error bodies are small; read them so callers can tell "not authorized" from "invalid token".
+      const errorBody = await readBoundedJson(response, maxBodyBytes, controller.signal).catch(() => undefined)
+      await response.body?.cancel().catch(() => {})
+      return { status: response.status, body: undefined, message: isRecord(errorBody) ? nonEmptyString(errorBody.message) : undefined }
     }
+    const body = await readBoundedJson(response, maxBodyBytes, controller.signal)
+    await response.body?.cancel().catch(() => {})
+    return { status: response.status, body }
   } finally {
     clearTimeout(timer)
+    outerSignal?.removeEventListener("abort", onOuterAbort)
   }
-}
-
-async function modelsFromResponse(
-  response: Response,
-  overlay: readonly OverlayModel[],
-  maxBodyBytes: number,
-  signal: AbortSignal,
-): Promise<OverlayModel[] | null> {
-  const payload = await readBoundedJson(response, maxBodyBytes, signal)
-  if (payload === undefined) return null
-  const live = parseLiveModels(payload)
-  if (!live || live.length === 0) return null
-  return mergeLiveWithOverlay(overlay, live)
 }
 
 async function readBoundedJson(
@@ -304,5 +404,9 @@ function readLiveReasoning(item: Record<string, unknown>): boolean | undefined {
   if (typeof item.supportsThinking === "boolean") return item.supportsThinking
   const capabilities = item.capabilities
   if (isRecord(capabilities) && typeof capabilities.thinking === "boolean") return capabilities.thinking
+  // Kiro's management catalog advertises thinking through the per-model request schema.
+  const schema = item.additionalModelRequestFieldsSchema
+  if (isRecord(schema) && isRecord(schema.properties) && isRecord(schema.properties.thinking)
+    && schema.properties.thinking.type === "object") return true
   return undefined
 }
