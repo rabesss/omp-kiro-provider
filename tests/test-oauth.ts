@@ -686,15 +686,20 @@ describe("stream errors", () => {
     ])
   })
 
-  it("closes the hidden-reasoning breadcrumb when the turn fails before its answer is shown", async () => {
+  it("shows the answer that arrived with a failure before reporting it", async () => {
     const invalid = frame("validationError", { message: "Input is too long" },
       { ":message-type": "exception", ":exception-type": "ValidationException" })
-    const { fetchImpl } = kiro([frames(content("Unshown"), invalid)])
+    const { fetchImpl } = kiro([frames(content("Partial"), invalid)])
     const events: AssistantMessageEvent[] = []
     const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true }, {}, events)(
       "breadcrumb-failure-token", { reasoning: "high" })
     assert.equal(output.stopReason, "error")
-    assert.deepEqual(events.map((event) => event.type), ["start", "thinking_start", "thinking_end", "error"])
+    assert.deepEqual(events.map((event) => event.type),
+      ["start", "thinking_start", "thinking_end", "text_start", "text_delta", "error"])
+    assert.deepEqual(output.content, [
+      { type: "thinking", thinking: "", redacted: true },
+      { type: "text", text: "Partial" },
+    ])
   })
 
   it("retries a turn Kiro had no capacity for", async () => {

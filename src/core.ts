@@ -8,7 +8,7 @@
  * - First-token timeout (180s) + idle stream timeout (300s)
  * - Empty response detection with retry
  * - Account profile resolution for OAuth and API keys
- * - Ban detection (TEMPORARILY_SUSPENDED) in HTTP errors AND stream content
+ * - Ban detection (TEMPORARILY_SUSPENDED) in HTTP errors and stream error frames
  * - Live event emission with retry buffering before the first visible delta
  */
 
@@ -1088,8 +1088,9 @@ export function createStreamKiro(deps: CoreDependencies) {
       } catch (error: unknown) {
         // Non-retryable error or exhausted retries
         cancelHiddenMarkerTimer()
-        // A close still in the buffer never reached the screen.
-        if (releasedBreadcrumbIndex !== null) hiddenThinkingIndex = releasedBreadcrumbIndex
+        // Nothing will retry now, so show what this attempt held back; the failed
+        // message then matches the screen.
+        flushBuffer()
         closeHiddenBreadcrumb(true)
         const reason: ErrorReason = controller.signal.aborted ? "aborted" : "error"
         output.stopReason = reason

@@ -16,7 +16,7 @@ This is an unofficial, community-maintained provider. It is not affiliated with,
 - Automatic token refresh for supported OAuth/OIDC sessions.
 - AWS Event Stream decoding with frame checksums, routed on each frame's event type.
 - Streaming text, reasoning (`<thinking>` tags and Kiro 5.x reasoning events), and tool-call conversion. OMP's `--thinking` level, `off` through `max`, sets the thinking budget. Redacted reasoning is never shown; models that reason server-side show a "Reasoning hidden by provider" placeholder while they think.
-- Retry handling for capacity errors, empty responses, and selected 5xx failures, only while nothing has reached the screen. Errors Kiro sends mid-stream are reported, not swallowed.
+- Retry handling for capacity errors, empty responses, 5xx responses and server-side stream failures, only while nothing has reached the screen. Errors Kiro sends mid-stream are reported, not swallowed.
 - Runtime model discovery. With a Kiro OAuth or API credential, the account's live catalog is the model list, so new Kiro models need no change here.
 - `models.json` as the offline catalog and as hints for what the live catalog leaves out.
 - Basic cost metadata set to zero because Kiro trial/subscription usage is not billed through OMP.
