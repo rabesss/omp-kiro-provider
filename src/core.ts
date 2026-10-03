@@ -31,7 +31,7 @@ import type {
   ToolCallContent,
   Usage,
 } from "./types.ts"
-import { buildKiroPayload, resolveToolName } from "./converters.ts"
+import { buildKiroPayload, resolveToolName, systemPromptText } from "./converters.ts"
 import { AwsEventStreamParser, type StreamErrorEvent } from "./eventstream.ts"
 import { ThinkingTagParser } from "./thinking-parser.ts"
 import { parseBracketToolCalls } from "./bracket-tool-parser.ts"
@@ -675,7 +675,7 @@ export function createStreamKiro(deps: CoreDependencies) {
         thinkingEnabled = reasoningLevel === false || reasoningLevel === "off" ? false : !!reasoningLevel || !!model.reasoning
         reasoningHidden = !!model.reasoningHidden || hiddenReasoningModels.has(model.id)
 
-        let systemPromptOverride = context.systemPrompt
+        let systemPromptOverride = systemPromptText(context.systemPrompt)
         if (thinkingEnabled && !reasoningHidden) {
           const budget = thinkingBudget(reasoningLevel)
           const prefix = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${budget}</max_thinking_length>`

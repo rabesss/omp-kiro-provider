@@ -43,6 +43,17 @@ describe("buildKiroPayload", () => {
     assert.equal(userInput.origin, "KIRO_CLI")
   })
 
+  // OMP 18 passes the system prompt as blocks: the main prompt, then project context.
+  it("keeps system prompt blocks apart", () => {
+    const payload = buildKiroPayload("claude-sonnet-4-5", {
+      systemPrompt: ["Main prompt.", "<project-context>repo</project-context>"],
+      messages: [{ role: "user", content: "Hello" }],
+    })
+
+    const userInput = payload.conversationState.currentMessage.userInputMessage as Record<string, unknown>
+    assert.equal(userInput.content, "Main prompt.\n\n<project-context>repo</project-context>\n\nHello")
+  })
+
   it("gives the synthetic leading user message the real model id", () => {
     const ctx: ContextLike = {
       messages: [

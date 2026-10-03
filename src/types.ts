@@ -110,7 +110,7 @@ export interface ToolLike {
 }
 
 export interface ContextLike {
-  systemPrompt?: string
+  systemPrompt?: string | readonly string[]
   messages: MessageLike[]
   tools?: ToolLike[]
 }

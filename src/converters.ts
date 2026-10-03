@@ -483,6 +483,11 @@ export interface KiroPayload {
   agentMode?: string
 }
 
+/** OMP 18 sends the system prompt as blocks (main prompt, project context); keep them apart. */
+export function systemPromptText(prompt?: string | readonly string[]): string {
+  return typeof prompt === "string" ? prompt : (prompt ?? []).filter(Boolean).join("\n\n")
+}
+
 export function buildKiroPayload(
   modelId: string,
   context: ContextLike,
@@ -498,7 +503,7 @@ export function buildKiroPayload(
   let { history, currentContent, currentImages, currentToolResults } = buildHistory(
     context.messages,
     kiroModelId,
-    context.systemPrompt ?? "",
+    systemPromptText(context.systemPrompt),
   )
 
   // Truncate history to fit context window (scaled dynamically)
