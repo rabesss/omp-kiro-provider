@@ -15,7 +15,7 @@ This is an unofficial, community-maintained provider. It is not affiliated with,
 - Supports API keys, Kiro CLI token reuse, Kiro IDE token fallback, and Builder ID or organization device-code login.
 - Automatic token refresh for supported OAuth/OIDC sessions.
 - AWS Event Stream response decoding.
-- Streaming text, reasoning/thinking markers, and tool-call conversion.
+- Streaming text, reasoning (`<thinking>` tags and Kiro 5.x reasoning events), and tool-call conversion. OMP's `--thinking` level, `off` through `max`, sets the thinking budget.
 - Retry handling for transient capacity errors, empty responses, and selected 5xx failures.
 - Hybrid runtime model discovery. With a Kiro OAuth or API credential, the provider resolves the account profile through Kiro's management API and merges its live model ids with `models.json`.
 - `models.json` overlay for reviewed capabilities. OMP keeps that static catalog when live discovery returns empty.

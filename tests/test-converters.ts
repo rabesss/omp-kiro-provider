@@ -329,6 +329,22 @@ describe("AwsEventStreamParser", () => {
     assert.deepEqual(parser.feed(Buffer.from('{"text":""}')), [])
   })
 
+  it("ignores reasoning payloads whose text is not a string", () => {
+    const parser = new AwsEventStreamParser()
+
+    assert.deepEqual(parser.feed(Buffer.from('{"text":37}{"text":{"redacted":true}}')), [])
+  })
+
+  it("drops a re-delivered reasoning delta like a content delta", () => {
+    const parser = new AwsEventStreamParser()
+    const events = parser.feed(Buffer.from('{"text":"step"}{"text":"step"}{"content":"step"}'))
+
+    assert.deepEqual(events, [
+      { type: "reasoning", text: "step" },
+      { type: "content", content: "step" },
+    ])
+  })
+
   it("parses tool start events", () => {
     const parser = new AwsEventStreamParser()
     const events = parser.feed(
@@ -810,5 +826,11 @@ describe("resolveReasoningLevel", () => {
 
   it("falls back to a selector suffix in the model id", () => {
     assert.equal(resolveReasoningLevel({ id: "claude-opus-5-5:medium", name: "Claude Opus 5.5" }), "medium")
+  })
+
+  it("accepts OMP's minimal and max efforts", () => {
+    assert.equal(resolveReasoningLevel(model, { reasoning: "minimal" }), "minimal")
+    assert.equal(resolveReasoningLevel(model, { reasoning: "max" }), "max")
+    assert.equal(resolveReasoningLevel({ id: "claude-opus-5-5:max", name: "Claude Opus 5.5" }), "max")
   })
 })

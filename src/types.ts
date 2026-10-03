@@ -133,7 +133,9 @@ export interface StreamOptions {
   signal?: AbortSignal
   headers?: Record<string, string>
   maxTokens?: number
-  reasoning?: boolean | "low" | "medium" | "high" | "xhigh"
+  reasoning?: boolean | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+  /** Set by OMP for `--thinking off`; takes precedence over `reasoning`. */
+  disableReasoning?: boolean
   toolChoice?: "auto" | "none" | string
   onPayload?: (body: unknown, model: ModelLike) => unknown | Promise<unknown>
   onResponse?: (info: ProviderResponseInfo, model: ModelLike) => void | Promise<void>

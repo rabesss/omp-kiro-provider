@@ -63,16 +63,17 @@ const HIDDEN_REASONING_PLACEHOLDER = "Reasoning hidden by provider"
 
 /** Map reasoning level to thinking budget in tokens. */
 function thinkingBudget(level: boolean | string | undefined): number {
-  if (level === "xhigh") return 50000
+  if (level === "max" || level === "xhigh") return 50000
   if (level === "high") return 30000
   if (level === "medium") return 20000
-  return 10000 // default / "low" / true
+  return 10000 // default / "minimal" / "low" / true
 }
 
-type ReasoningLevel = boolean | "off" | "low" | "medium" | "high" | "xhigh"
+const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const
+type ReasoningLevel = boolean | (typeof REASONING_LEVELS)[number]
 
 function isReasoningLevel(value: unknown): value is ReasoningLevel {
-  return value === true || value === false || value === "off" || value === "low" || value === "medium" || value === "high" || value === "xhigh"
+  return typeof value === "boolean" || (REASONING_LEVELS as readonly unknown[]).includes(value)
 }
 
 function readReasoningField(source: unknown, key: string): ReasoningLevel | undefined {
@@ -88,9 +89,7 @@ export function shouldRetryHttpStatus(status: number): boolean {
 
 export function resolveReasoningLevel(model: Pick<ModelLike, "id" | "name">, options?: StreamOptions): ReasoningLevel | undefined {
   // OMP signals "thinking off" by disabling reasoning rather than by name.
-  if (options && typeof options === "object" && (options as Record<string, unknown>).disableReasoning === true) {
-    return false
-  }
+  if (options?.disableReasoning === true) return false
 
   const direct = readReasoningField(options, "reasoning")
   if (direct !== undefined) return direct
@@ -103,7 +102,7 @@ export function resolveReasoningLevel(model: Pick<ModelLike, "id" | "name">, opt
   if (metadataReasoning !== undefined) return metadataReasoning
 
   const selector = `${model.id}:${model.name}`
-  const match = selector.match(/:(xhigh|high|medium|low|off)(?:\b|$)/)
+  const match = selector.match(/:(xhigh|high|medium|low|minimal|max|off)(?:\b|$)/)
   return match ? (match[1] as Exclude<ReasoningLevel, boolean>) : undefined
 }
 
@@ -485,7 +484,6 @@ export function createStreamKiro(deps: CoreDependencies) {
             // Kiro 5.x models stream reasoning on a dedicated channel
             // (reasoningContentEvent) instead of <thinking> tags in content.
             if (!thinkingEnabled || reasoningHidden) break
-            closeHiddenBreadcrumb()
             if (!reasoningBlock) {
               reasoningBlock = { type: "thinking", thinking: "" }
               output.content.push(reasoningBlock)
@@ -860,10 +858,10 @@ export function createStreamKiro(deps: CoreDependencies) {
                     throw new Error(`Kiro account suspended (detected in stream). Content: ${event.content.slice(0, 200)}`)
                   }
 
-                  if (event.type === "content") {
-                    gotFirstContent = true
-                    lastContentTime = Date.now()
-                  }
+                  // Any decoded frame shows the stream is alive; a model can reason or
+                  // stream tool input for minutes before its first answer text.
+                  gotFirstContent = true
+                  lastContentTime = Date.now()
 
                   if (!capacityRetryable) {
                     handleEvent(event)
@@ -898,8 +896,9 @@ export function createStreamKiro(deps: CoreDependencies) {
               throw new Error("INSUFFICIENT_MODEL_CAPACITY after all retries")
             }
 
-            // Empty response detection: got 200 but zero content events
-            const hasContent = output.content.length > 0
+            // Empty response detection: got 200 but no answer text or tool call.
+            // Reasoning alone is not an answer.
+            const hasContent = output.content.some((block) => block.type !== "thinking")
             if (!hasContent && outerAttempt < maxAttempts - 1) {
               try { await reader?.cancel() } catch { /* ok */ }
               try { reader?.releaseLock() } catch { /* ok */ }

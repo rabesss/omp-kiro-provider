@@ -120,6 +120,7 @@ const EVENT_PATTERNS: ReadonlyArray<{ prefix: string; eventType: string }> = [
   { prefix: '{"stop":', eventType: "tool_stop" },
   { prefix: '{"content":', eventType: "content" },
   { prefix: '{"content": ', eventType: "content" },
+  // Only reasoningContentEvent payloads start with a `text` key.
   { prefix: '{"text":', eventType: "reasoning" },
   { prefix: '{"text": ', eventType: "reasoning" },
   { prefix: '{"usage":', eventType: "usage" },
@@ -200,8 +201,12 @@ export class AwsEventStreamParser {
   ): KiroEvent | null {
     switch (eventType) {
       case "reasoning": {
-        const text = String(data.text ?? "")
+        const text = typeof data.text === "string" ? data.text : ""
         if (text === "") return null
+        // Same consecutive-duplicate guard as content deltas.
+        if (text === this.lastContent && this.lastContentType === "reasoning") return null
+        this.lastContent = text
+        this.lastContentType = "reasoning"
         return { type: "reasoning", text }
       }
 

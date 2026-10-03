@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, describe, it } from "node:test"
-import type { AssistantMessageEvent, AssistantMessageLike } from "../src/types.ts"
+import type { AssistantMessageEvent, AssistantMessageLike, StreamOptions } from "../src/types.ts"
 
 // Isolate the public login/refresh API from the developer's credentials.
 const home = mkdtempSync(join(tmpdir(), "omp-kiro-oauth-"))
@@ -369,7 +369,7 @@ describe("cancelling while the profile is resolved", () => {
 /** Returns a function that streams one "Reply OK" turn through `fetchImpl` per call. */
 function kiroTurns(
   fetchImpl: typeof fetch,
-): (apiKey: string, headers?: Record<string, string>) => Promise<AssistantMessageLike> {
+): (apiKey: string, options?: StreamOptions) => Promise<AssistantMessageLike> {
   const streamKiro = createStreamKiro({
     apiBase: "https://runtime.us-east-1.kiro.dev",
     fetchImpl,
@@ -396,19 +396,19 @@ function kiroTurns(
     homeDir: home,
     calculateCost: () => {},
   })
-  return (apiKey, headers) => streamKiro({
+  return (apiKey, options = {}) => streamKiro({
     id: "claude-opus-5-5", name: "Claude Opus 5.5", api: "kiro-custom", provider: "kiro",
     reasoning: false, input: ["text"], contextWindow: 1_000_000, maxTokens: 128_000,
-  }, { messages: [{ role: "user", content: "Reply OK" }] }, { apiKey, headers }).result()
+  }, { messages: [{ role: "user", content: "Reply OK" }] }, { ...options, apiKey }).result()
 }
 
 /** Streams one "Reply OK" turn through `fetchImpl` and returns the final message. */
 function streamOnce(
   fetchImpl: typeof fetch,
   apiKey: string,
-  headers?: Record<string, string>,
+  options: StreamOptions = {},
 ): Promise<AssistantMessageLike> {
-  return kiroTurns(fetchImpl)(apiKey, headers)
+  return kiroTurns(fetchImpl)(apiKey, options)
 }
 
 describe("profile region", () => {
@@ -473,9 +473,77 @@ describe("credential type header", () => {
       const headers = new Headers(init?.headers)
       tokenTypes = [headers.get("TokenType")]
       return new Response('{"content":"OK"}')
-    }) as typeof fetch, "header-oauth-token", { tokentype: "API_KEY", Authorization: "Bearer other" })
+    }) as typeof fetch, "header-oauth-token", { headers: { tokentype: "API_KEY", Authorization: "Bearer other" } })
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(tokenTypes, [null])
+  })
+})
+
+describe("reasoning stream", () => {
+  const profileArn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/default"
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve))
+  }
+
+  it("retries a turn that only reasoned", async () => {
+    const bodies = ['{"text":"Thinking"}', '{"text":"Thinking"}{"content":"OK"}']
+    let inferenceCalls = 0
+    const output = await streamOnce((async (input: RequestInfo | URL) => {
+      if (new URL(String(input)).pathname === "/List-Available-Profiles") {
+        return response({ profiles: [{ arn: profileArn }] })
+      }
+      return new Response(bodies[inferenceCalls++])
+    }) as typeof fetch, "reasoning-only-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.equal(inferenceCalls, 2)
+    assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
+  })
+
+  it("treats reasoning as stream activity before the first answer", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] })
+    const encoder = new TextEncoder()
+    let send: (chunk: string) => void = () => { throw new Error("Stream not opened") }
+    let close = () => {}
+    const result = streamOnce((async (input: RequestInfo | URL) => {
+      if (new URL(String(input)).pathname === "/List-Available-Profiles") {
+        return response({ profiles: [{ arn: profileArn }] })
+      }
+      return new Response(new ReadableStream({
+        start(controller) {
+          send = (chunk) => controller.enqueue(encoder.encode(chunk))
+          close = () => controller.close()
+        },
+      }))
+    }) as typeof fetch, "long-reasoning-token", { reasoning: "high" })
+
+    // Reason for 200s, past the 180s first-token timeout, before answering.
+    await settle()
+    send('{"text":"Weighing"}')
+    await settle()
+    t.mock.timers.tick(100_000)
+    send('{"text":" options"}')
+    await settle()
+    t.mock.timers.tick(100_000)
+    await settle()
+    send('{"content":"OK"}')
+    close()
+
+    const output = await result
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
+  })
+
+  it("asks for the largest thinking budget at max effort", async () => {
+    let body = ""
+    const output = await streamOnce((async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(String(input)).pathname === "/List-Available-Profiles") {
+        return response({ profiles: [{ arn: profileArn }] })
+      }
+      body = String(init?.body)
+      return new Response('{"content":"OK"}')
+    }) as typeof fetch, "max-effort-token", { reasoning: "max" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.match(body, /<max_thinking_length>50000<\/max_thinking_length>/)
   })
 })
 
