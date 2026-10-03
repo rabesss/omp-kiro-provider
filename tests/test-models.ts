@@ -21,7 +21,16 @@ describe("Kiro model catalog", () => {
 
   it("lists the account's live catalog, not models.json, in a form OMP can cache", () => {
     let config: Record<string, unknown> | undefined
-    registerKiro({ registerProvider: (_name: string, value: Record<string, unknown>) => { config = value } } as never)
+    // With KIRO_API_KEY set, OMP pairs `authHeader` with the declared apiKey into a header resolver.
+    const savedKey = process.env.KIRO_API_KEY
+    process.env.KIRO_API_KEY = "ksk_test"
+    try {
+      registerKiro({ registerProvider: (_name: string, value: Record<string, unknown>) => { config = value } } as never)
+    } finally {
+      if (savedKey === undefined) delete process.env.KIRO_API_KEY
+      else process.env.KIRO_API_KEY = savedKey
+    }
+    assert.equal(config?.apiKey, "KIRO_API_KEY")
     // OMP would list a static entry for every account, including models Kiro has retired.
     assert.equal(config?.models, undefined)
     assert.equal(typeof config?.fetchDynamicModels, "function")

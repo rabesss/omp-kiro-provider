@@ -35,5 +35,5 @@ Agents that open or update PRs in this repository must keep this section current
   the account lacks fails with `INVALID_MODEL_ID`. Flag any change that
   registers it again.
 - 2026-10-04: Do not set `authHeader` on the provider. OMP's model cache drops a
-  model with a header resolver, so with `KIRO_API_KEY` set a failed discovery
-  listed no Kiro models. `streamKiro` builds its own credential headers.
+  model with a header resolver (OMP 18.5.1), so with `KIRO_API_KEY` set a failed
+  discovery listed no Kiro models. `streamKiro` builds its own credential headers.

@@ -49,7 +49,7 @@ export default function (pi: ExtensionAPI) {
     // Declare it only when the variable is actually set.
     ...(process.env.KIRO_API_KEY ? { apiKey: "KIRO_API_KEY" } : {}),
     // No `authHeader`: streamKiro sets its own credential headers, and OMP's model cache drops a
-    // model with a header resolver, so a failed discovery would then list no Kiro models.
+    // model with a header resolver (OMP 18.5.1), so a failed discovery would list no Kiro models.
     api: "kiro-custom" as never,
     streamSimple: streamKiro as never,
     oauth: {

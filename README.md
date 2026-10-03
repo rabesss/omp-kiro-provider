@@ -40,7 +40,7 @@ extensions:
   - ~/.omp/agent/extensions/omp-kiro-provider
 ```
 
-Restart `omp`, then verify that Kiro models are visible:
+Restart `omp` and [sign in](#authentication), then verify that your account's Kiro models are visible:
 
 ```sh
 omp models kiro
@@ -151,11 +151,11 @@ or `models.json` says so. A model in neither gets text-only input and conservati
 
 `omp models kiro` and the `/model` picker list exactly the account's live catalog: `models.json` is
 not registered as a model list, so a new Kiro model appears and a retired one disappears with no
-change here. Discovery requires auth; there is no public catalog. OMP caches the catalog and
-refreshes it once a day, after `/login`, and on `omp models refresh kiro`. When you are signed out
-or discovery fails, `fetchDynamicModels` fails rather than returning an empty list, because OMP
-would take an empty list as the account's whole catalog. OMP then keeps its cached catalog; with
-none cached yet, it lists no Kiro models until discovery succeeds.
+change here. Discovery requires auth; there is no public catalog, and OMP lists no Kiro models while
+you are signed out. OMP caches the catalog and refreshes it once a day, after `/login`, and on
+`omp models refresh kiro`. When discovery fails, `fetchDynamicModels` fails rather than returning an
+empty list, because OMP would take an empty list as the account's whole catalog. OMP then keeps its
+cached catalog; with none cached yet, it lists no Kiro models until discovery succeeds.
 
 The provider does not write `models.json` at runtime. There is no weekly updater. An entry applies
 only to a model the catalog lists, so one for a retired model is harmless and one for a model the
