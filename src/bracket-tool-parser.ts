@@ -54,12 +54,12 @@ function findJsonEnd(text: string, start: number): number {
   return -1
 }
 
-/** A call quoted as code, inline or fenced, is an example rather than an invocation. */
+/** A call quoted as Markdown code is an example rather than an invocation. */
 function isQuotedAsCode(text: string, index: number): boolean {
   const before = text.slice(0, index)
-  if (before.split("```").length % 2 === 0) return true
-  const line = before.slice(before.lastIndexOf("\n") + 1).replaceAll("```", "")
-  return line.split("`").length % 2 === 0
+  const fences = before.match(/^ {0,3}(```|~~~)/gm)?.length ?? 0
+  const line = before.slice(before.lastIndexOf("\n") + 1)
+  return fences % 2 === 1 || /^( {4}|\t)\s*$/.test(line) || line.split("`").length % 2 === 0
 }
 
 /**

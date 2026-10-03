@@ -123,7 +123,7 @@ describe("buildKiroPayload", () => {
         {
           name: "read_file",
           description: "Read a file",
-          input_schema: { type: "object", properties: { path: { type: "string" } } },
+          parameters: { type: "object", properties: { path: { type: "string" } } },
         },
       ],
     }
@@ -147,7 +147,7 @@ describe("buildKiroPayload", () => {
     const ctx: ContextLike = {
       systemPrompt: undefined,
       messages: [{ role: "user", content: "test" }],
-      tools: [{ name: longName, description: "desc", input_schema: {} }],
+      tools: [{ name: longName, description: "desc", parameters: {} }],
     }
 
     const payload = buildKiroPayload("claude_sonnet_4_5", ctx)
@@ -165,7 +165,7 @@ describe("buildKiroPayload", () => {
       tools: [{
         name: "strict_tool",
         description: "",
-        input_schema: {
+        parameters: {
           type: "object",
           additionalProperties: false,
           required: [],
@@ -199,7 +199,7 @@ describe("buildKiroPayload", () => {
     const longDescription = "A".repeat(10001)
     const payload = buildKiroPayload("model", {
       messages: [{ role: "user", content: "test" }],
-      tools: [{ name: "documented_tool", description: longDescription, input_schema: {} }],
+      tools: [{ name: "documented_tool", description: longDescription, parameters: {} }],
     })
     const current = payload.conversationState.currentMessage.userInputMessage
     const userCtx = current.userInputMessageContext as Record<string, unknown>
@@ -331,7 +331,7 @@ describe("buildKiroPayload", () => {
           toolResults: [{ toolCallId: "tc1", content: "file contents" }],
         },
       ],
-      tools: [{ name: "read_file", description: "read", input_schema: {} }],
+      tools: [{ name: "read_file", description: "read", parameters: {} }],
     }
 
     const payload = buildKiroPayload("model", ctx)
@@ -734,7 +734,9 @@ describe("parseBracketToolCalls", () => {
   it("leaves calls quoted as code alone", () => {
     const inline = 'The syntax is `[Called bash with args: {"command":"echo unexpected"}]`.'
     const fenced = 'Example:\n```\n[Called bash with args: {"command":"echo unexpected"}]\n```\nDone.'
-    for (const text of [inline, fenced]) {
+    const tildes = 'Example:\n~~~\n[Called bash with args: {"command":"echo unexpected"}]\n~~~\nDone.'
+    const indented = 'Example:\n\n    [Called bash with args: {"command":"echo unexpected"}]\n\nDone.'
+    for (const text of [inline, fenced, tildes, indented]) {
       assert.deepEqual(parseBracketToolCalls(text), { toolCalls: [], cleanedText: text })
     }
   })

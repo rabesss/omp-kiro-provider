@@ -118,9 +118,9 @@ function toolsToKiroFormat(tools?: readonly ToolLike[]): unknown[] | undefined {
       description = description.slice(0, KIRO_MAX_TOOL_DESCRIPTION - suffix.length) + suffix
     }
 
-    // OMP passes plain JSON Schema; forward it whole so property descriptions,
-    // limits, and optional fields reach the model.
-    const schema = tool.input_schema ?? tool.parameters
+    // OMP passes plain JSON Schema; forward it, less the keywords Kiro rejects, so
+    // property descriptions, limits, and optional fields reach the model.
+    const schema = tool.parameters
     return {
       toolSpecification: {
         name,

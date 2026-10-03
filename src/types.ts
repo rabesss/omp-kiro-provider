@@ -106,7 +106,6 @@ export interface ToolLike {
   name: string
   description: string
   parameters?: unknown
-  input_schema?: Record<string, unknown>
 }
 
 export interface ContextLike {
