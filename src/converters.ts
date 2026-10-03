@@ -425,7 +425,7 @@ function enforceAlternation(history: unknown[], modelId: string): unknown[] {
   const syntheticUser = { userInputMessage: { content: "(continued)", modelId, origin: "AI_EDITOR" } }
 
   // If first message is assistant, prepend synthetic user
-  if (history.length > 0 && "assistantResponseMessage" in (history[0] as Record<string, unknown>)) {
+  if ("assistantResponseMessage" in (history[0] as Record<string, unknown>)) {
     result.push(syntheticUser)
   }
 
@@ -495,7 +495,6 @@ export function buildKiroPayload(
   modelId: string,
   context: ContextLike,
   profileArn?: string,
-  conversationId?: string,
   contextWindow?: number,
 ): KiroPayload {
   // Clear truncation map for each new request
@@ -534,7 +533,7 @@ export function buildKiroPayload(
 
   const payload: KiroPayload = {
     conversationState: {
-      conversationId: conversationId ?? randomUUID(),
+      conversationId: randomUUID(),
       chatTriggerType: "MANUAL",
       agentTaskType: "vibe",
       currentMessage: { userInputMessage },

@@ -275,12 +275,6 @@ export class AwsEventStreamParser {
     }
     return events
   }
-
-  /** Reset parser state for reuse. */
-  reset(): void {
-    this.buffer = new Uint8Array(0)
-    this.openToolUseId = null
-  }
 }
 
 function errorEvent(errorType: string, data: Record<string, unknown> | undefined, payload: string): StreamErrorEvent {

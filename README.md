@@ -102,11 +102,10 @@ Use a qualified OMP model selector:
 
 ```sh
 omp --model kiro/auto
-omp --model kiro/claude-sonnet-4-6
-omp -p --model kiro/qwen3-coder-next "Reply briefly."
+omp -p --model kiro/auto "Reply briefly."
 ```
 
-Do not use `--provider kiro`; OMP resolves extension-defined providers through qualified `--model kiro/<model-id>` selectors.
+Any model id from `omp --list-models kiro` can take the place of `auto`. Do not use `--provider kiro`; OMP resolves extension-defined providers through qualified `--model kiro/<model-id>` selectors.
 
 Only one Kiro response streams at a time across every `omp` session on the machine; other
 sessions and subagents wait their turn, because parallel streams on one account draw throttling.
@@ -148,27 +147,9 @@ its cached catalog or `models.json`.
 
 The provider does not write `models.json` at runtime. There is no weekly updater.
 
-The registry currently includes selectors such as:
-
-- `kiro/auto`
-- `kiro/claude-sonnet-4-5`
-- `kiro/claude-sonnet-4-6`
-- `kiro/claude-sonnet-5`
-- `kiro/claude-opus-4-5`
-- `kiro/claude-opus-4-8`
-- `kiro/claude-opus-5-5` (when available in the authenticated account's live catalog)
-- `kiro/kimi-k2-5`
-- `kiro/qwen3-coder-next`
-- `kiro/qwen3-coder-480b`
-- `kiro/minimax-m2-5`
-- `kiro/agi-nova-beta-1m`
-- `kiro/gpt-5-6-sol`
-- `kiro/gpt-5-6-terra`
-- `kiro/gpt-5-6-luna`
-
-New models such as Opus 5.5 appear when the account catalog includes them, and retired ones
-disappear, with no change to `models.json`. Edit it only to correct metadata the catalog gets
-wrong or leaves out, in a reviewable PR, and run the test suite before merging.
+`omp --list-models kiro` shows the models your account can use. New Kiro models appear there,
+and retired ones disappear, with no change to `models.json`. Edit it only to correct metadata
+the catalog gets wrong or leaves out, in a reviewable PR, and run the test suite before merging.
 
 ## Development
 

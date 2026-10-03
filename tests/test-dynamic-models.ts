@@ -36,15 +36,7 @@ const OVERLAY: OverlayModel[] = [
 ]
 
 function jsonResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
-  const text = typeof body === "string" ? body : JSON.stringify(body)
-  const bytes = new TextEncoder().encode(text)
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: new Headers(headers),
-    text: async () => text,
-    arrayBuffer: async () => bytes.slice().buffer,
-  } as Response
+  return new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers })
 }
 
 function header(init: RequestInit | undefined, name: string): string | undefined {
@@ -239,11 +231,6 @@ describe("mergeLiveWithOverlay", () => {
     assert.notEqual(sonnet, OVERLAY[0])
   })
 
-  it("carries hidden reasoning from the overlay", () => {
-    const overlay: OverlayModel[] = [{ ...OVERLAY[1], id: "hidden", reasoningHidden: true }]
-    assert.equal(mergeLiveWithOverlay(overlay, [{ id: "hidden" }])[0].reasoningHidden, true)
-  })
-
   it("accepts images for every Claude model", () => {
     const merged = mergeLiveWithOverlay([], [
       { id: "claude-new", input: ["text"] },
@@ -356,7 +343,6 @@ describe("fetchDynamicKiroModels", () => {
         id: "claude-opus-4-7",
         name: "Claude Opus 4.7",
         reasoning: true,
-        reasoningHidden: true,
         input: ["text", "image"],
         contextWindow: 1_000_000,
         maxTokens: 128_000,

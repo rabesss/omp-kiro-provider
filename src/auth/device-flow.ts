@@ -13,7 +13,7 @@
  * Anti-detection: clientName uses "Kiro" branding, matching real IDE.
  */
 
-import type { OAuthLoginCallbacks } from "../types.ts"
+import type { KiroCredentials, OAuthLoginCallbacks } from "../types.ts"
 
 const CODEWHISPERER_SCOPES = [
   "codewhisperer:completions",
@@ -25,20 +25,6 @@ const CODEWHISPERER_SCOPES = [
 
 const START_URL = "https://view.awsapps.com/start"
 const DEFAULT_REGION = "us-east-1"
-
-// ---------------------------------------------------------------------------
-// Internal credentials (full form, not OMP's reduced shape)
-// ---------------------------------------------------------------------------
-
-export interface DeviceFlowCredentials {
-  access: string
-  refresh: string
-  expiresAt: number
-  method: string
-  clientId?: string
-  clientSecret?: string
-  region?: string
-}
 
 // ---------------------------------------------------------------------------
 // Step 1: Register OIDC client
@@ -136,7 +122,7 @@ async function pollForToken(
   clientId: string,
   clientSecret: string,
   deviceCode: string,
-): Promise<DeviceFlowCredentials> {
+): Promise<KiroCredentials> {
   const url = `https://oidc.${region}.amazonaws.com/token`
 
   const res = await fetch(url, {
@@ -197,7 +183,7 @@ export async function runDeviceCodeFlow(
   callbacks: OAuthLoginCallbacks,
   region = DEFAULT_REGION,
   startUrl = START_URL,
-): Promise<DeviceFlowCredentials> {
+): Promise<KiroCredentials> {
   // Step 1: Register client
   const { clientId, clientSecret } = await registerClient(region, startUrl)
 

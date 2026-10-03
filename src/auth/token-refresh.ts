@@ -6,31 +6,17 @@
  * camelCase field names.
  */
 
+import type { KiroCredentials } from "../types.ts"
 
 const DEFAULT_REGION = "us-east-1"
-
-// ---------------------------------------------------------------------------
-// Internal credentials type (full form with method/clientId/region)
-// ---------------------------------------------------------------------------
-
-export interface RefreshCredentials {
-  access: string
-  refresh: string
-  expiresAt: number
-  method: string
-  clientId?: string
-  clientSecret?: string
-  region?: string
-  profileArn?: string
-}
 
 // ---------------------------------------------------------------------------
 // Social refresh (Google / GitHub login)
 // ---------------------------------------------------------------------------
 
 async function refreshSocialToken(
-  credentials: RefreshCredentials,
-): Promise<RefreshCredentials> {
+  credentials: KiroCredentials,
+): Promise<KiroCredentials> {
   const region = credentials.region ?? DEFAULT_REGION
   const url = `https://prod.${region}.auth.desktop.kiro.dev/refreshToken`
 
@@ -75,8 +61,8 @@ async function refreshSocialToken(
 // ---------------------------------------------------------------------------
 
 async function refreshOidcToken(
-  credentials: RefreshCredentials,
-): Promise<RefreshCredentials> {
+  credentials: KiroCredentials,
+): Promise<KiroCredentials> {
   if (!credentials.clientId || !credentials.clientSecret) {
     throw new Error("OIDC refresh requires clientId and clientSecret in credentials")
   }
@@ -131,8 +117,8 @@ async function refreshOidcToken(
 // ---------------------------------------------------------------------------
 
 export async function refreshKiroToken(
-  credentials: RefreshCredentials,
-): Promise<RefreshCredentials> {
+  credentials: KiroCredentials,
+): Promise<KiroCredentials> {
   if (credentials.method === "apikey") return credentials
   if (credentials.method === "idc") return refreshOidcToken(credentials)
   return refreshSocialToken(credentials)

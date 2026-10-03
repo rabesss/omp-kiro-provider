@@ -17,11 +17,9 @@ import { join, dirname } from "node:path"
 import { homedir } from "node:os"
 import { execFileSync } from "node:child_process"
 
-import type { KiroAuthMeta } from "./types.ts"
+import type { KiroAuthMeta, KiroCredentials, OAuthLoginCallbacks } from "./types.ts"
 import { runDeviceCodeFlow } from "./auth/device-flow.ts"
 import { refreshKiroToken } from "./auth/token-refresh.ts"
-
-export type { OAuthLoginCallbacks } from "./types.ts"
 
 const FAR_FUTURE_MS = 10 * 365 * 24 * 60 * 60 * 1000
 const DEFAULT_REGION = "us-east-1"
@@ -105,7 +103,7 @@ function credentialsFromApiKey(apiKey: string): OMPCredentials {
 }
 
 /** Remove terminal paste wrappers, surrounding whitespace, control chars. */
-export function sanitizeApiKey(input: string): string {
+function sanitizeApiKey(input: string): string {
   return input
     .replace(/^['"`]+|['"`]+$/g, "")
     .replace(/[\x00-\x1F\x7F]/g, "")
@@ -132,22 +130,6 @@ interface CliRegistration {
 
 interface CliProfile {
   arn: string
-  profileName: string
-}
-
-function sqlite3Json(dbPath: string, query: string): unknown | null {
-  try {
-    const out = execFileSync("sqlite3", [dbPath, "-json", query], {
-      encoding: "utf-8",
-      timeout: 5000,
-      stdio: ["pipe", "pipe", "pipe"],
-    })
-    if (!out.trim()) return null
-    const rows = JSON.parse(out) as unknown[]
-    return rows.length > 0 ? rows[0] : null
-  } catch {
-    return null
-  }
 }
 
 function sqlite3Raw(dbPath: string, query: string): string | null {
@@ -292,18 +274,7 @@ function tryReadIdeToken(): { creds: OMPCredentials; meta: KiroAuthMeta } | null
 // Internal credentials adapter
 // ---------------------------------------------------------------------------
 
-interface FullCredentials {
-  access: string
-  refresh: string
-  expiresAt: number
-  method: string
-  clientId?: string
-  clientSecret?: string
-  region?: string
-  profileArn?: string
-}
-
-function toFull(creds: OMPCredentials, meta: KiroAuthMeta): FullCredentials {
+function toFull(creds: OMPCredentials, meta: KiroAuthMeta): KiroCredentials {
   return {
     access: creds.access,
     refresh: creds.refresh,
@@ -316,7 +287,7 @@ function toFull(creds: OMPCredentials, meta: KiroAuthMeta): FullCredentials {
   }
 }
 
-function fromFull(full: FullCredentials): { creds: OMPCredentials; meta: KiroAuthMeta } {
+function fromFull(full: KiroCredentials): { creds: OMPCredentials; meta: KiroAuthMeta } {
   const meta: KiroAuthMeta = {
     method: full.method,
     clientId: full.clientId,
@@ -347,13 +318,9 @@ function tryAutoDetect(): { creds: OMPCredentials; meta: KiroAuthMeta } | null {
 // Public: login()
 // ---------------------------------------------------------------------------
 
-export async function login(callbacks: import("./types.ts").OAuthLoginCallbacks): Promise<OMPCredentials | string> {
+export async function login(callbacks: OAuthLoginCallbacks): Promise<OMPCredentials | string> {
   // Auto-detect existing login
   const existing = tryAutoDetect()
-
-  const autoHint = existing
-    ? " (1: existing login detected)" 
-    : ""
 
   const choice = await callbacks.onPrompt({
     message:

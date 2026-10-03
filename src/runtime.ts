@@ -1,17 +1,14 @@
 /**
  * Push-based event stream implementation.
  *
- * Identical to omp-commandcode-provider/src/runtime.ts — the OMP runtime
- * consumes events via async iteration; this class bridges push-based
- * producers (our stream parser) to that interface.
+ * The OMP runtime consumes events via async iteration; this class bridges
+ * push-based producers (our stream parser) to that interface.
  */
 
 import type {
   AssistantMessageEvent,
   AssistantMessageEventStreamLike,
   AssistantMessageLike,
-  ModelLike,
-  Usage,
 } from "./types.ts"
 
 class KiroEventStream implements AssistantMessageEventStreamLike {
@@ -77,8 +74,4 @@ class KiroEventStream implements AssistantMessageEventStreamLike {
 
 export function createAssistantMessageEventStream(): AssistantMessageEventStreamLike {
   return new KiroEventStream()
-}
-
-export function calculateCost(_model: ModelLike, _usage: Usage): void {
-  // Kiro is free during trial. No cost calculation needed.
 }

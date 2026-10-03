@@ -37,11 +37,7 @@ import { ThinkingTagParser } from "./thinking-parser.ts"
 import { parseBracketToolCalls } from "./bracket-tool-parser.ts"
 import { kiroBaseForRegion, kiroRegionFromProfileArn, resolveKiroProfileArn } from "./dynamic-models.ts"
 import { isKiroApiKey, kiroTokenTypeHeaders } from "./auth/token-type.ts"
-
-export * from "./converters.ts"
-export * from "./eventstream.ts"
-export * from "./types.ts"
-
+import { getStoredProfileArn } from "./oauth.ts"
 
 // Retry / timeout configuration
 const MAX_HTTP_RETRIES = 1           // transient 5xx retries; 429 is backpressure
@@ -102,9 +98,7 @@ function headersToRecord(headers: Headers): Record<string, string> {
 }
 
 /** Custom error for retryable stream-level failures. */
-class RetryableError extends Error {
-  constructor(message: string) { super(message) }
-}
+class RetryableError extends Error {}
 
 /** The error to fail a turn with when Kiro reports `event` mid-stream. */
 function streamFailure(event: StreamErrorEvent): Error {
@@ -179,7 +173,6 @@ export function createStreamKiro(deps: CoreDependencies) {
   const apiBase = deps.apiBase
   const managementBase = deps.managementBase ?? apiBase.replace(/^(https?:\/\/)runtime\./, "$1management.")
   const profileArnCache = new Map<string, string>()
-  // Models whose reasoning stays server-side, as listed in models.json.
   const hiddenReasoningModels = new Set(deps.hiddenReasoningModels ?? [])
   const fetchImpl = deps.fetchImpl ?? fetch
   const now = deps.now ?? (() => Date.now())
@@ -344,15 +337,6 @@ export function createStreamKiro(deps: CoreDependencies) {
       const controller = new AbortController()
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
       let releaseKiroStreamGate: (() => void) | undefined
-
-      // Read auth metadata to route profileArn correctly
-      const metaRaw = (() => {
-        try {
-          const p = join(homedir(), ".omp", "agent", "kiro-auth-meta.json")
-          if (!existsSync(p)) return null
-          return JSON.parse(readFileSync(p, "utf-8")) as { method?: string; profileArn?: string; region?: string }
-        } catch { return null }
-      })()
 
       const abortUpstream = () => {
         if (!controller.signal.aborted) controller.abort()
@@ -634,7 +618,7 @@ export function createStreamKiro(deps: CoreDependencies) {
             apiKey: token,
             apiBase: managementBase,
             fetchImpl,
-            profileArn: metaRaw?.profileArn,
+            profileArn: getStoredProfileArn(),
             env: deps.env,
             signal: options?.signal,
           })
@@ -673,7 +657,7 @@ export function createStreamKiro(deps: CoreDependencies) {
         // Skip for reasoningHidden models (server-side reasoning, no tags emitted).
         const reasoningLevel = resolveReasoningLevel(options)
         thinkingEnabled = reasoningLevel === false || reasoningLevel === "off" ? false : !!reasoningLevel || !!model.reasoning
-        reasoningHidden = !!model.reasoningHidden || hiddenReasoningModels.has(model.id)
+        reasoningHidden = hiddenReasoningModels.has(model.id)
 
         let systemPromptOverride = systemPromptText(context.systemPrompt)
         if (thinkingEnabled && !reasoningHidden) {
@@ -687,7 +671,7 @@ export function createStreamKiro(deps: CoreDependencies) {
           ...context,
           systemPrompt: systemPromptOverride,
         }
-        const body = buildKiroPayload(model.id, contextForPayload, profileArn, undefined, model.contextWindow)
+        const body = buildKiroPayload(model.id, contextForPayload, profileArn, model.contextWindow)
 
         // Build headers — the credential headers come only from the credential, never from
         // user-supplied headers, so neither the token nor its declared type can be overridden.

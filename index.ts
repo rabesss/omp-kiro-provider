@@ -1,16 +1,6 @@
 /**
- * Kiro provider for OMP.
- *
- * Native OMP local plugin that integrates Kiro (kiro.dev) as a provider.
- *
- * Supports:
- * - API Key login (ksk_xxx)
- * - Social OAuth token reuse (Google/GitHub)
- * - AWS Builder ID device code flow (browser login)
- * - Automatic token refresh (social + OIDC)
- *
- * Inference requests use the Kiro CLI's headers.
- * No external dependencies — pure TypeScript, Node builtins only.
+ * Kiro provider for OMP: registers the `kiro/*` models, Kiro login, and streaming.
+ * No external dependencies — pure TypeScript, Node builtins only. See README.md.
  */
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent"
@@ -19,7 +9,7 @@ import { createStreamKiro } from "./src/core.ts"
 import { fetchDynamicKiroModels } from "./src/dynamic-models.ts"
 import { loadModels } from "./src/models.ts"
 import { getApiKey, getStoredProfileArn, login, refreshToken } from "./src/oauth.ts"
-import { calculateCost, createAssistantMessageEventStream } from "./src/runtime.ts"
+import { createAssistantMessageEventStream } from "./src/runtime.ts"
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -43,7 +33,6 @@ const streamKiro = createStreamKiro({
   createStream: createAssistantMessageEventStream,
   now: () => Date.now(),
   env: process.env as Record<string, string | undefined>,
-  calculateCost,
   hiddenReasoningModels: MODELS.filter((model) => model.reasoningHidden).map((model) => model.id),
 })
 

@@ -4,7 +4,6 @@ export type OverlayModel = {
   id: string
   name: string
   reasoning: boolean
-  reasoningHidden?: boolean
   input: ("text" | "image")[]
   contextWindow: number
   maxTokens: number
@@ -101,7 +100,6 @@ export function mergeLiveWithOverlay(
       id: item.id,
       name: item.name ?? known?.name ?? item.id,
       reasoning: item.reasoning ?? known?.reasoning ?? false,
-      ...(known?.reasoningHidden ? { reasoningHidden: true } : {}),
       input: image ? ["text", "image"] : ["text"],
       contextWindow: item.contextWindow ?? known?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       maxTokens: item.maxTokens ?? known?.maxTokens ?? DEFAULT_MAX_TOKENS,
@@ -272,7 +270,7 @@ async function requestManagement(
       ...(postHeaders ? { body: "{}" } : {}),
       signal: controller.signal,
     })
-    if (!is2xx(response)) {
+    if (!response.ok) {
       // Error bodies are small; read them so callers can tell "not authorized" from "invalid token".
       const errorBody = await readBoundedJson(response, maxBodyBytes, controller.signal).catch(() => undefined)
       await response.body?.cancel().catch(() => {})
@@ -292,17 +290,14 @@ async function readBoundedJson(
   maxBodyBytes: number,
   signal: AbortSignal,
 ): Promise<unknown | undefined> {
-  if (signal.aborted) return undefined
-  const declared = response.headers?.get?.("content-length")
+  if (signal.aborted || !response.body) return undefined
+  const declared = response.headers.get("content-length")
   if (declared) {
     const size = Number(declared)
     if (Number.isFinite(size) && size > maxBodyBytes) return undefined
   }
 
-  const stream = response.body
-  const bytes = stream && typeof stream.getReader === "function"
-    ? await readBoundedStream(stream, maxBodyBytes, signal)
-    : await readBoundedBuffer(response, maxBodyBytes, signal)
+  const bytes = await readBoundedStream(response.body, maxBodyBytes, signal)
   if (!bytes) return undefined
 
   try {
@@ -345,19 +340,6 @@ async function readBoundedStream(
   return concatBytes(chunks, total)
 }
 
-async function readBoundedBuffer(
-  response: Response,
-  maxBodyBytes: number,
-  signal: AbortSignal,
-): Promise<Uint8Array | undefined> {
-  if (signal.aborted) return undefined
-  const bytes = typeof response.arrayBuffer === "function"
-    ? new Uint8Array(await response.arrayBuffer())
-    : new TextEncoder().encode(await response.text())
-  if (signal.aborted || bytes.byteLength > maxBodyBytes) return undefined
-  return bytes
-}
-
 function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
   const out = new Uint8Array(total)
   let offset = 0
@@ -366,11 +348,6 @@ function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
     offset += chunk.byteLength
   }
   return out
-}
-
-function is2xx(response: Response): boolean {
-  if (response.ok === true) return true
-  return typeof response.status === "number" && response.status >= 200 && response.status < 300
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

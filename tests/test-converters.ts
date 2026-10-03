@@ -513,16 +513,6 @@ describe("AwsEventStreamParser", () => {
     ])
   })
 
-  it("drops a partial frame and the open tool call on reset", () => {
-    const parser = new AwsEventStreamParser()
-    parser.feed(frame("toolUseEvent", { name: "read", toolUseId: "t1" }))
-    parser.feed(content("partial").subarray(0, 10))
-    parser.reset()
-    assert.deepEqual(parser.feed(frame("toolUseEvent", { name: "read", toolUseId: "t1", input: "{}" })), [
-      { type: "tool_start", toolUseId: "t1", name: "read", input: "{}", stop: false },
-    ])
-  })
-
   // Captured from Kiro by Gavin Woods (github.com/GavinWoods/omp-kiro-provider).
   describe("captured Kiro response", () => {
     it("decodes the text, the streamed tool call, and the redacted reasoning", () => {
@@ -772,7 +762,7 @@ describe("buildKiroPayload with history truncation", () => {
     }
 
     // Small context window = tight limit
-    const payload = buildKiroPayload("test-model", ctx, undefined, undefined, 200000)
+    const payload = buildKiroPayload("test-model", ctx, undefined, 200000)
 
     // History should be significantly shorter than 2000 messages
     const history = payload.conversationState.history as unknown[]
@@ -794,7 +784,7 @@ describe("buildKiroPayload with history truncation", () => {
       systemPrompt: "Test",
     }
 
-    const payload = buildKiroPayload("test-model", ctx, undefined, undefined, 200000)
+    const payload = buildKiroPayload("test-model", ctx, undefined, 200000)
     const history = payload.conversationState.history as unknown[]
     // Should have 2 entries: user("Hello") + assistant("Hi there")
     assert.equal(history.length, 2)
@@ -808,7 +798,7 @@ describe("buildKiroPayload with history truncation", () => {
     }
     messages.push({ role: "user", content: "Final message" })
 
-    const payload = buildKiroPayload("test-model", { messages }, undefined, undefined, 1000000)
+    const payload = buildKiroPayload("test-model", { messages }, undefined, 1000000)
     assert.ok(Buffer.byteLength(JSON.stringify(payload), "utf8") <= 600000)
   })
 

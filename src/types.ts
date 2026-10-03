@@ -1,9 +1,5 @@
 /**
- * Shared types for the Kiro OMP provider.
- *
- * These types match the OMP provider contract exactly — identical to
- * omp-commandcode-provider/src/types.ts — so OMP can use any provider
- * interchangeably.
+ * Shared types for the Kiro OMP provider: the parts of OMP's provider contract it uses.
  */
 
 // ---------------------------------------------------------------------------
@@ -86,9 +82,7 @@ export interface ModelLike {
   id: string
   name: string
   reasoning: boolean
-  reasoningHidden?: boolean
   input: ("text" | "image")[]
-  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number }
   contextWindow: number
   maxTokens: number
   api: string
@@ -131,12 +125,9 @@ export interface StreamOptions {
   apiKey?: string
   signal?: AbortSignal
   headers?: Record<string, string>
-  maxTokens?: number
   reasoning?: boolean | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
   /** Set by OMP for `--thinking off`; takes precedence over `reasoning`. */
   disableReasoning?: boolean
-  toolChoice?: "auto" | "none" | string
-  onPayload?: (body: unknown, model: ModelLike) => unknown | Promise<unknown>
   onResponse?: (info: ProviderResponseInfo, model: ModelLike) => void | Promise<void>
 }
 
@@ -175,10 +166,9 @@ export interface CoreDependencies {
   createStream: () => AssistantMessageEventStreamLike
   now: () => number
   env: Record<string, string | undefined>
-  calculateCost: (model: ModelLike, usage: Usage) => void
   /**
-   * Ids of models whose reasoning stays server-side. OMP drops custom model
-   * fields such as `reasoningHidden`, so the provider passes them here.
+   * Ids of models whose reasoning stays server-side (`reasoningHidden` in models.json).
+   * OMP drops custom model fields, so the provider passes them here.
    */
   hiddenReasoningModels?: Iterable<string>
 }
@@ -209,4 +199,11 @@ export interface KiroAuthMeta {
   region?: string
   /** profileArn from Kiro auth (sent in API requests) */
   profileArn?: string
+}
+
+/** A Kiro login as the device flow and token refresh produce it. */
+export interface KiroCredentials extends KiroAuthMeta {
+  access: string
+  refresh: string
+  expiresAt: number
 }
