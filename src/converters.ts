@@ -143,13 +143,16 @@ function sanitizeJsonSchema(schema: unknown): unknown {
   for (const [key, value] of Object.entries(schema)) {
     if (key === "additionalProperties") continue
     if (key === "required" && Array.isArray(value) && value.length === 0) continue
-    // `properties` maps names to schemas; a property may be named like a keyword.
-    sanitized[key] = key === "properties" && isRecord(value)
+    // These map names to schemas, and a name may look like a keyword.
+    sanitized[key] = SCHEMA_MAPS.has(key) && isRecord(value)
       ? Object.fromEntries(Object.entries(value).map(([name, child]) => [name, sanitizeJsonSchema(child)]))
-      : sanitizeJsonSchema(value)
+      : LITERAL_KEYWORDS.has(key) ? value : sanitizeJsonSchema(value)
   }
   return sanitized
 }
+
+const SCHEMA_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"])
+const LITERAL_KEYWORDS = new Set(["const", "default", "enum", "examples"])
 
 // ---------------------------------------------------------------------------
 // Tool result conversion

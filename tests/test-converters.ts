@@ -262,7 +262,8 @@ describe("buildKiroPayload", () => {
     })
   })
 
-  it("keeps a property named like a stripped keyword", () => {
+  it("keeps names and literal values that look like stripped keywords", () => {
+    const literal = { additionalProperties: false, required: [] }
     const payload = buildKiroPayload("model", {
       messages: [{ role: "user", content: "test" }],
       tools: [{
@@ -270,7 +271,12 @@ describe("buildKiroPayload", () => {
         description: "Edits schemas",
         parameters: {
           type: "object",
-          properties: { additionalProperties: { type: "boolean" }, required: { type: "array", items: { type: "string" } } },
+          properties: {
+            additionalProperties: { $ref: "#/$defs/additionalProperties" },
+            required: { type: "array", items: { type: "string" } },
+            draft: { type: "object", const: literal, default: literal },
+          },
+          $defs: { additionalProperties: { type: "boolean" } },
         },
       }],
     })
@@ -280,7 +286,9 @@ describe("buildKiroPayload", () => {
     const spec = tools[0].toolSpecification as Record<string, unknown>
     const schema = (spec.inputSchema as Record<string, unknown>).json as Record<string, unknown>
 
-    assert.deepEqual(Object.keys(schema.properties as object), ["additionalProperties", "required"])
+    assert.deepEqual(Object.keys(schema.properties as object), ["additionalProperties", "required", "draft"])
+    assert.deepEqual(schema.$defs, { additionalProperties: { type: "boolean" } })
+    assert.deepEqual((schema.properties as Record<string, unknown>).draft, { type: "object", const: literal, default: literal })
   })
 
   it("sends an empty object schema for a tool without parameters", () => {
@@ -721,6 +729,14 @@ describe("parseBracketToolCalls", () => {
     const result = parseBracketToolCalls(text)
 
     assert.equal(result.toolCalls.length, 0)
+  })
+
+  it("leaves calls quoted as code alone", () => {
+    const inline = 'The syntax is `[Called bash with args: {"command":"echo unexpected"}]`.'
+    const fenced = 'Example:\n```\n[Called bash with args: {"command":"echo unexpected"}]\n```\nDone.'
+    for (const text of [inline, fenced]) {
+      assert.deepEqual(parseBracketToolCalls(text), { toolCalls: [], cleanedText: text })
+    }
   })
 
   it("generates unique toolUseId for each call", () => {

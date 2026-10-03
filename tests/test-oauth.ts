@@ -680,9 +680,11 @@ describe("tool calls written as text", () => {
   it("leaves Claude's text as written", async () => {
     const text = `Kiro history shows ${bracketCall} for each call.`
     const { fetchImpl } = kiro([content(text)])
-    const output = await kiroTurns(fetchImpl, { reasoning: true })("claude-text-token", { reasoning: "high" })
+    const events: AssistantMessageEvent[] = []
+    const output = await kiroTurns(fetchImpl, { reasoning: true }, {}, events)("claude-text-token", { reasoning: "high" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(output.content, [{ type: "text", text }])
+    assert.deepEqual(events.map((event) => event.type), ["start", "text_start", "text_delta", "text_end", "done"])
   })
 })
 
