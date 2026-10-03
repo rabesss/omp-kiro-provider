@@ -27,9 +27,10 @@ import { calculateCost, createAssistantMessageEventStream } from "./src/runtime.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_REGION = "us-east-1"
-const region = process.env.KIRO_REGION ?? DEFAULT_REGION
-const DEFAULT_API_BASE = `https://q.${region}.amazonaws.com`
+const region = process.env.KIRO_REGION?.trim().toLowerCase() || DEFAULT_REGION
+const DEFAULT_API_BASE = `https://runtime.${region}.kiro.dev`
 const API_BASE = process.env.KIRO_API_BASE ?? DEFAULT_API_BASE
+const MANAGEMENT_BASE = `https://management.${region}.kiro.dev`
 const MODELS = loadModels()
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ const MODELS = loadModels()
 
 const streamKiro = createStreamKiro({
   apiBase: API_BASE,
+  managementBase: MANAGEMENT_BASE,
   fetchImpl: fetch,
   createStream: createAssistantMessageEventStream,
   cwd: () => process.cwd(),
@@ -56,7 +58,10 @@ const streamKiro = createStreamKiro({
 export default function (pi: ExtensionAPI) {
   pi.registerProvider("kiro", {
     baseUrl: API_BASE,
-    apiKey: "KIRO_API_KEY",
+    // With KIRO_API_KEY unset, OMP's model discovery received this literal name as the key
+    // instead of the OAuth token (observed on OMP 18.4.9) and cached an empty catalog.
+    // Declare it only when the variable is actually set.
+    ...(process.env.KIRO_API_KEY ? { apiKey: "KIRO_API_KEY" } : {}),
     authHeader: true,
     api: "kiro-custom" as never,
     streamSimple: streamKiro as never,
@@ -69,7 +74,7 @@ export default function (pi: ExtensionAPI) {
     models: MODELS,
     fetchDynamicModels: (apiKey?: string) => fetchDynamicKiroModels({
       apiKey,
-      apiBase: API_BASE,
+      apiBase: MANAGEMENT_BASE,
       overlay: MODELS,
       profileArn: getStoredProfileArn(),
     }),

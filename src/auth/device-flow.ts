@@ -1,5 +1,5 @@
 /**
- * AWS SSO OIDC Device Code Flow for Builder ID login.
+ * AWS SSO OIDC Device Code Flow for Builder ID and IAM Identity Center login.
  *
  * Extracted from AERT-7Y/kiro-auto/lib/auth.ts (clean TypeScript).
  * This is the same flow the real Kiro IDE uses for Builder ID authentication.
@@ -44,7 +44,7 @@ export interface DeviceFlowCredentials {
 // Step 1: Register OIDC client
 // ---------------------------------------------------------------------------
 
-async function registerClient(region: string): Promise<{
+async function registerClient(region: string, startUrl: string): Promise<{
   clientId: string
   clientSecret: string
 }> {
@@ -61,7 +61,7 @@ async function registerClient(region: string): Promise<{
         "urn:ietf:params:oauth:grant-type:device_code",
         "refresh_token",
       ],
-      issuerUrl: START_URL,
+      issuerUrl: startUrl,
     }),
   })
 
@@ -85,6 +85,7 @@ async function startDeviceAuth(
   region: string,
   clientId: string,
   clientSecret: string,
+  startUrl: string,
 ): Promise<{
   deviceCode: string
   userCode: string
@@ -97,7 +98,7 @@ async function startDeviceAuth(
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clientId, clientSecret, startUrl: START_URL }),
+    body: JSON.stringify({ clientId, clientSecret, startUrl }),
   })
 
   if (!res.ok) {
@@ -195,18 +196,20 @@ class SlowDownError extends Error { constructor() { super("slow_down") } }
 export async function runDeviceCodeFlow(
   callbacks: OAuthLoginCallbacks,
   region = DEFAULT_REGION,
+  startUrl = START_URL,
 ): Promise<DeviceFlowCredentials> {
   // Step 1: Register client
-  const { clientId, clientSecret } = await registerClient(region)
+  const { clientId, clientSecret } = await registerClient(region, startUrl)
 
   // Step 2: Start device auth
-  const auth = await startDeviceAuth(region, clientId, clientSecret)
+  const auth = await startDeviceAuth(region, clientId, clientSecret, startUrl)
 
-  // Tell user to open browser
-  await callbacks.onAuth({ url: auth.verificationUri })
-
-  // Also tell them the code (in case the URL doesn't auto-fill it)
-  try { await callbacks.onPrompt({ message: `Enter code: ${auth.userCode}` }) } catch { /* best effort notification */ }
+  // Show the link with the code to confirm; polling starts right away, no extra keypress.
+  await callbacks.onAuth({
+    url: auth.verificationUri,
+    instructions: `Confirm the code ${auth.userCode} in your browser and approve access for Kiro.`,
+  })
+  callbacks.onProgress?.("Waiting for browser authorization...")
 
   // Step 3: Poll for completion
   let interval = auth.interval * 1000

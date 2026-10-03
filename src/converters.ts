@@ -462,7 +462,7 @@ function buildHistory(
 
   // Enforce alternation: Kiro requires user/assistant/user/... pattern.
   // Merge consecutive same-role messages and handle leading assistant messages.
-  const normalized = enforceAlternation(history)
+  const normalized = enforceAlternation(history, modelId)
 
   // Current message content (the last message)
   let currentContent = textContent(lastMessage.content)
@@ -494,11 +494,11 @@ function buildHistory(
  * - If history starts with assistant, prepend a synthetic user message
  * - Merge consecutive same-role messages by concatenating content
  */
-function enforceAlternation(history: unknown[]): unknown[] {
+function enforceAlternation(history: unknown[], modelId: string): unknown[] {
   if (history.length === 0) return history
 
   const result: unknown[] = []
-  const syntheticUser = { userInputMessage: { content: "(continued)", modelId: "", origin: "AI_EDITOR" } }
+  const syntheticUser = { userInputMessage: { content: "(continued)", modelId, origin: "AI_EDITOR" } }
 
   // If first message is assistant, prepend synthetic user
   if (history.length > 0 && "assistantResponseMessage" in (history[0] as Record<string, unknown>)) {
