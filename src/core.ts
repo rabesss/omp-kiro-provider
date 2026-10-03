@@ -1088,6 +1088,8 @@ export function createStreamKiro(deps: CoreDependencies) {
       } catch (error: unknown) {
         // Non-retryable error or exhausted retries
         cancelHiddenMarkerTimer()
+        // A close still in the buffer never reached the screen.
+        if (releasedBreadcrumbIndex !== null) hiddenThinkingIndex = releasedBreadcrumbIndex
         closeHiddenBreadcrumb(true)
         const reason: ErrorReason = controller.signal.aborted ? "aborted" : "error"
         output.stopReason = reason

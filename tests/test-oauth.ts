@@ -367,11 +367,15 @@ describe("cancelling while the profile is resolved", () => {
   })
 })
 
-/** Returns a function that streams one "Reply OK" turn through `fetchImpl` per call. */
+/**
+ * Returns a function that streams one "Reply OK" turn through `fetchImpl` per call,
+ * recording every streamed event in `events`.
+ */
 function kiroTurns(
   fetchImpl: typeof fetch,
   model: Partial<ModelLike> = {},
   deps: Partial<CoreDependencies> = {},
+  events: AssistantMessageEvent[] = [],
 ): (apiKey: string, options?: StreamOptions) => Promise<AssistantMessageLike> {
   const streamKiro = createStreamKiro({
     apiBase: "https://runtime.us-east-1.kiro.dev",
@@ -379,7 +383,6 @@ function kiroTurns(
     createStream: () => {
       let finish: (message: AssistantMessageLike) => void = () => { throw new Error("Result not initialized") }
       const result = new Promise<AssistantMessageLike>((resolve) => { finish = resolve })
-      const events: AssistantMessageEvent[] = []
       return {
         push(event) {
           events.push(event)
@@ -681,6 +684,17 @@ describe("stream errors", () => {
       { type: "thinking", thinking: "", redacted: true },
       { type: "text", text: "OK" },
     ])
+  })
+
+  it("closes the hidden-reasoning breadcrumb when the turn fails before its answer is shown", async () => {
+    const invalid = frame("validationError", { message: "Input is too long" },
+      { ":message-type": "exception", ":exception-type": "ValidationException" })
+    const { fetchImpl } = kiro([frames(content("Unshown"), invalid)])
+    const events: AssistantMessageEvent[] = []
+    const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true }, {}, events)(
+      "breadcrumb-failure-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "error")
+    assert.deepEqual(events.map((event) => event.type), ["start", "thinking_start", "thinking_end", "error"])
   })
 
   it("retries a turn Kiro had no capacity for", async () => {
