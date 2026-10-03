@@ -17,8 +17,8 @@ This is an unofficial, community-maintained provider. It is not affiliated with,
 - AWS Event Stream decoding with frame checksums, routed on each frame's event type.
 - Streaming text, reasoning (`<thinking>` tags and Kiro 5.x reasoning events), and tool-call conversion. OMP's `--thinking` level, `off` through `max`, sets the thinking budget. Redacted reasoning is never shown; models that reason server-side show a "Reasoning hidden by provider" placeholder while they think.
 - Retry handling for capacity errors, empty responses, 5xx responses and server-side stream failures, only while nothing has reached the screen. Errors Kiro sends mid-stream are reported, not swallowed.
-- Runtime model discovery. With a Kiro OAuth or API credential, the account's live catalog adds its models to the list, so new Kiro models need no change here.
-- `models.json` as the offline catalog and as hints for what the live catalog leaves out.
+- Runtime model discovery. With a Kiro OAuth or API credential, the account's live catalog is the model list, so new and retired Kiro models need no change here.
+- `models.json` as hints for what the live catalog leaves out.
 - Kiro credit usage in OMP's `/usage` and `omp usage`.
 - Basic cost metadata set to zero because Kiro trial/subscription usage is not billed through OMP.
 - Unit tests for converters, event-stream parsing, model catalog invariants, dynamic discovery, and usage.
@@ -149,23 +149,18 @@ model's request schema). `models.json` fills in what the catalog leaves out and 
 reasoning stays server-side. Every Claude model accepts images; other models do when the catalog
 or `models.json` says so. A model in neither gets text-only input and conservative token defaults.
 
-`models.json` is also OMP's static `models` catalog, so its models are listed before the first
-discovery and when discovery fails. Discovery requires auth; there is no public catalog. When you are signed out or discovery
-fails, `fetchDynamicModels` fails rather than returning an empty list, because OMP would take an
-empty list as the account's whole catalog and drop every model discovered so far. OMP then keeps
-its cached catalog or `models.json`.
+`omp models kiro` and the `/model` picker list exactly the account's live catalog: `models.json` is
+not registered as a model list, so a new Kiro model appears and a retired one disappears with no
+change here. Discovery requires auth; there is no public catalog. OMP caches the catalog and
+refreshes it once a day, after `/login`, and on `omp models refresh kiro`. When you are signed out
+or discovery fails, `fetchDynamicModels` fails rather than returning an empty list, because OMP
+would take an empty list as the account's whole catalog. OMP then keeps its cached catalog; with
+none cached yet, it lists no Kiro models until discovery succeeds.
 
-The provider does not write `models.json` at runtime. There is no weekly updater.
-
-`omp models kiro` and the `/model` picker list the `models.json` models together with the
-discovered ones (OMP 18.4.2 and 18.5.0), so they can include models your account cannot use. A new
-Kiro model appears once discovery has run, with no change to `models.json`; a retired one stays
-listed only while `models.json` still has it, and fails with `INVALID_MODEL_ID` when selected.
-Edit `models.json` only to correct metadata the catalog gets wrong or leaves out, or to remove a
-model Kiro no longer lists (compare with `kiro-cli chat --list-models -f json`). Do not add a model
-that only some accounts can use, such as an Enterprise preview: every account would see it, and
-discovery already adds it where the account has access. Make each change in a reviewable PR and run
-the test suite before merging.
+The provider does not write `models.json` at runtime. There is no weekly updater. An entry applies
+only to a model the catalog lists, so one for a retired model is harmless and one for a model the
+account lacks adds nothing. Edit `models.json` only to correct metadata the catalog gets wrong or
+leaves out, in a reviewable PR, and run the test suite before merging.
 
 Kiro often sends a model's id as its name. For a Claude or GPT model missing from `models.json`,
 the provider then derives a readable name from the id: `claude-opus-5.5` is shown as
@@ -186,7 +181,7 @@ Useful files:
 ```text
 omp-kiro-provider/
 ├── index.ts                 # OMP extension entry point
-├── models.json              # committed capability overlay and fallback catalog
+├── models.json              # committed capability overlay for the live catalog
 ├── src/models.ts            # small filesystem loader and catalog validation
 ├── src/dynamic-models.ts    # ListAvailableModels parse, merge, and fetch
 ├── src/usage.ts             # Get-Usage-Limits credit report for /usage

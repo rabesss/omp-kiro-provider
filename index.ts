@@ -48,7 +48,8 @@ export default function (pi: ExtensionAPI) {
     // instead of the OAuth token (observed on OMP 18.4.9) and cached an empty catalog.
     // Declare it only when the variable is actually set.
     ...(process.env.KIRO_API_KEY ? { apiKey: "KIRO_API_KEY" } : {}),
-    authHeader: true,
+    // No `authHeader`: streamKiro sets its own credential headers, and OMP's model cache drops a
+    // model with a header resolver, so a failed discovery would then list no Kiro models.
     api: "kiro-custom" as never,
     streamSimple: streamKiro as never,
     oauth: {
@@ -57,7 +58,9 @@ export default function (pi: ExtensionAPI) {
       refreshToken,
       getApiKey,
     },
-    models: MODELS,
+    // No static `models`: OMP would list every models.json entry for every account, including
+    // models Kiro has retired. The list is the account's live catalog, which OMP caches and
+    // keeps while discovery fails.
     fetchDynamicModels: (apiKey?: string) => fetchDynamicKiroModels({
       apiKey,
       apiBase: MANAGEMENT_BASE,

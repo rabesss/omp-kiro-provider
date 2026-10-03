@@ -30,6 +30,10 @@ Agents that open or update PRs in this repository must keep this section current
   (`src/auth/token-type.ts`), which throws first without the token.
 - 2026-10-03: Droid Auto Review cannot run on pull requests from forks (GitHub
   gives them no OIDC token), so its failure there says nothing about the code.
-- 2026-10-03: OMP lists every `models.json` entry for every account, beside the
-  discovered models. Flag an added model that only some accounts can use, and a
-  kept one Kiro no longer lists: both fail with `INVALID_MODEL_ID`.
+- 2026-10-04: `models.json` is a metadata overlay, not a model list. Registered
+  as OMP's static `models`, every entry is listed for every account, and one
+  the account lacks fails with `INVALID_MODEL_ID`. Flag any change that
+  registers it again.
+- 2026-10-04: Do not set `authHeader` on the provider. OMP's model cache drops a
+  model with a header resolver, so with `KIRO_API_KEY` set a failed discovery
+  listed no Kiro models. `streamKiro` builds its own credential headers.

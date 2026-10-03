@@ -83,10 +83,9 @@ export function parseLiveModels(payload: unknown): LiveModel[] | null {
 }
 
 /**
- * Builds the discovered models from the account's live catalog: a model Kiro adds appears
- * without a models.json entry, and models.json only fills in what the catalog leaves out.
- * OMP lists every models.json entry beside these, so a model Kiro retires stays listed until
- * it is removed from models.json.
+ * Builds the account's models from its live catalog: a model Kiro adds appears without a
+ * models.json entry, one it retires disappears, and models.json only fills in what the
+ * catalog leaves out.
  */
 export function mergeLiveWithOverlay(
   overlay: readonly OverlayModel[],
@@ -136,7 +135,7 @@ function friendlyLiveModelName(model: LiveModel, knownName?: string): string {
 
 /**
  * Lists the account's models. Fails rather than returning an empty list: OMP takes a
- * successful result as the whole catalog, while a failure keeps the cached or bundled one.
+ * successful result as the whole catalog, while a failure keeps the cached one.
  */
 export async function fetchDynamicKiroModels(
   options: FetchDynamicKiroModelsOptions,
