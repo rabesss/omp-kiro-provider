@@ -160,8 +160,12 @@ The provider does not write `models.json` at runtime. There is no weekly updater
 `omp models kiro` and the `/model` picker list the `models.json` models together with the
 discovered ones (OMP 18.4.2 and 18.5.0), so they can include models your account cannot use. A new
 Kiro model appears once discovery has run, with no change to `models.json`; a retired one stays
-listed only while `models.json` still has it. Edit `models.json` only to correct metadata the
-catalog gets wrong or leaves out, in a reviewable PR, and run the test suite before merging.
+listed only while `models.json` still has it, and fails with `INVALID_MODEL_ID` when selected.
+Edit `models.json` only to correct metadata the catalog gets wrong or leaves out, or to remove a
+model Kiro no longer lists (compare with `kiro-cli chat --list-models -f json`). Do not add a model
+that only some accounts can use, such as an Enterprise preview: every account would see it, and
+discovery already adds it where the account has access. Make each change in a reviewable PR and run
+the test suite before merging.
 
 Kiro often sends a model's id as its name. For a Claude or GPT model missing from `models.json`,
 the provider then derives a readable name from the id: `claude-opus-5.5` is shown as

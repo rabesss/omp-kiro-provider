@@ -30,3 +30,6 @@ Agents that open or update PRs in this repository must keep this section current
   (`src/auth/token-type.ts`), which throws first without the token.
 - 2026-10-03: Droid Auto Review cannot run on pull requests from forks (GitHub
   gives them no OIDC token), so its failure there says nothing about the code.
+- 2026-10-03: OMP lists every `models.json` entry for every account, beside the
+  discovered models. Flag an added model that only some accounts can use, and a
+  kept one Kiro no longer lists: both fail with `INVALID_MODEL_ID`.

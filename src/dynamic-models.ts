@@ -83,9 +83,10 @@ export function parseLiveModels(payload: unknown): LiveModel[] | null {
 }
 
 /**
- * The account's live catalog is the model list: a model Kiro adds appears without a
- * models.json entry, and one it retires disappears. models.json only fills in what the
- * catalog leaves out.
+ * Builds the discovered models from the account's live catalog: a model Kiro adds appears
+ * without a models.json entry, and models.json only fills in what the catalog leaves out.
+ * OMP lists every models.json entry beside these, so a model Kiro retires stays listed until
+ * it is removed from models.json.
  */
 export function mergeLiveWithOverlay(
   overlay: readonly OverlayModel[],
