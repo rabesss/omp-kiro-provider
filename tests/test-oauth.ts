@@ -527,13 +527,30 @@ describe("reasoning stream", () => {
     assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
   })
 
-  it("shows reasoning a hidden-reasoning model streams as text after closing its breadcrumb", async () => {
+  it("shows reasoning a hidden-reasoning model streams in place of its breadcrumb", async () => {
     const { fetchImpl } = kiro([frames(reasoning("visible"), content("OK"))])
     const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true })(
       "hidden-reasoning-text-token", { reasoning: "high" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
-    assert.deepEqual(output.content.map((block) => block.type), ["thinking", "thinking", "text"])
-    assert.equal(output.content[1].type === "thinking" && output.content[1].thinking, "visible")
+    assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
+    assert.deepEqual(output.content[0], { type: "thinking", thinking: "visible" })
+  })
+
+  it("drops the hidden-reasoning placeholder once readable reasoning arrives", async () => {
+    // The placeholder appears after two seconds of silence.
+    const late = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 2_200))
+        controller.enqueue(frames(reasoning("visible"), content("OK")))
+        controller.close()
+      },
+    })
+    const { fetchImpl } = kiro([late])
+    const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true })(
+      "late-reasoning-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
+    assert.deepEqual(output.content[0], { type: "thinking", thinking: "visible" })
   })
 
   // OMP drops custom model fields such as `reasoningHidden`, so the provider passes the ids itself.
@@ -547,21 +564,25 @@ describe("reasoning stream", () => {
     assert.doesNotMatch(requests[0], /thinking_mode/)
   })
 
-  it("learns that a model hides its reasoning from redacted reasoning", async () => {
+  // A model can redact a single response (Claude does for safety), and `auto` routes
+  // each turn to a different model, so redaction says nothing about the next turn.
+  it("hides redacted reasoning without treating the model as hidden-reasoning", async () => {
     const { requests, fetchImpl } = kiro([
       frames(content("OK"), frame("reasoningContentEvent", { redactedContent: "LktUUn5+opaque" })),
-      content("OK"),
+      frames(content("<thinking>plan</thinking>answer")),
     ])
-    const turn = kiroTurns(fetchImpl, { id: "redacting-model", reasoning: true })
+    const turn = kiroTurns(fetchImpl, { id: "auto", reasoning: true })
     const first = await turn("redacted-reasoning-token", { reasoning: "high" })
     assert.equal(first.stopReason, "stop", first.errorMessage)
     assert.deepEqual(first.content.map((block) => block.type), ["text"])
     assert.ok(!JSON.stringify(first.content).includes("LktUUn5"))
-    assert.match(requests[0], /thinking_mode/)
 
     const second = await turn("redacted-reasoning-token", { reasoning: "high" })
-    assert.deepEqual(second.content.map((block) => block.type), ["thinking", "text"])
-    assert.doesNotMatch(requests[1], /thinking_mode/)
+    assert.match(requests[1], /thinking_mode/)
+    assert.deepEqual(second.content, [
+      { type: "thinking", thinking: "plan" },
+      { type: "text", text: "answer" },
+    ])
   })
 
   it("asks for no reasoning when thinking is off", async () => {

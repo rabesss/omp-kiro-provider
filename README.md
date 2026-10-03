@@ -142,9 +142,6 @@ fails, `fetchDynamicModels` fails rather than returning an empty list, because O
 empty list as the account's whole catalog and drop every Kiro model. OMP then keeps its cached
 catalog or `models.json`.
 
-Models that reason server-side send redacted reasoning. The provider learns this from the stream,
-so such a model shows the placeholder from its next turn on without a `models.json` entry.
-
 The provider does not write `models.json` at runtime. There is no weekly updater.
 
 The registry currently includes selectors such as:

@@ -219,7 +219,7 @@ export function createStreamKiro(deps: CoreDependencies) {
   const apiBase = deps.apiBase
   const managementBase = deps.managementBase ?? apiBase.replace(/^(https?:\/\/)runtime\./, "$1management.")
   const profileArnCache = new Map<string, string>()
-  // Models whose reasoning stays server-side: listed in models.json, or seen sending redacted reasoning.
+  // Models whose reasoning stays server-side, as listed in models.json.
   const hiddenReasoningModels = new Set(deps.hiddenReasoningModels ?? [])
   const fetchImpl = deps.fetchImpl ?? fetch
   const cwd = deps.cwd ?? (() => process.cwd())
@@ -499,7 +499,16 @@ export function createStreamKiro(deps: CoreDependencies) {
             // Kiro 5.x models stream reasoning on a dedicated channel
             // (reasoningContentEvent) instead of <thinking> tags in content.
             if (!thinkingEnabled) break
-            closeHiddenBreadcrumb()
+            if (!reasoningBlock && hiddenThinkingIndex !== null && hiddenThinkingBlock) {
+              // The reasoning is readable after all, so it takes over the breadcrumb,
+              // replacing any "hidden" placeholder already shown in it.
+              cancelHiddenMarkerTimer()
+              hiddenThinkingBlock.thinking = ""
+              delete hiddenThinkingBlock.redacted
+              reasoningBlock = hiddenThinkingBlock
+              currentReasoningIdx = hiddenThinkingIndex
+              hiddenThinkingIndex = null
+            }
             if (!reasoningBlock) {
               reasoningBlock = { type: "thinking", thinking: "" }
               output.content.push(reasoningBlock)
@@ -513,12 +522,9 @@ export function createStreamKiro(deps: CoreDependencies) {
             break
           }
 
-          case "reasoning_redacted": {
-            // The model reasoned server-side and Kiro withholds it; show the
-            // hidden-reasoning breadcrumb for this model from the next turn on.
-            hiddenReasoningModels.add(model.id)
+          case "reasoning_redacted":
+            // Kiro withholds this reasoning; its opaque blob is never shown.
             break
-          }
 
           case "content": {
             // Close hidden reasoning breadcrumb on first real content
