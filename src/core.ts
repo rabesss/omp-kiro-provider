@@ -333,6 +333,8 @@ export function createStreamKiro(deps: CoreDependencies) {
 
       // Environment variable fallback
       if (!apiKey) apiKey = deps.env?.KIRO_API_KEY
+      // Discovery trims the key too; a stray space would hide the ksk_ prefix.
+      apiKey = apiKey?.trim()
 
 
 

@@ -449,6 +449,20 @@ describe("credential type header", () => {
     assert.deepEqual(inference, { tokenType: "API_KEY", profileArn: keyArn })
   })
 
+  it("recognizes an API key that arrives with surrounding whitespace", async () => {
+    let inference: { authorization: string | null; tokenType: string | null } | undefined
+    const output = await streamOnce((async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      if (new URL(String(input)).hostname === "management.us-east-1.kiro.dev") {
+        return response({ profile: { arn: "arn:aws:codewhisperer:us-east-1:987654321098:profile/api-key" } })
+      }
+      inference = { authorization: headers.get("Authorization"), tokenType: headers.get("TokenType") }
+      return new Response('{"content":"OK"}')
+    }) as typeof fetch, " ksk_example_api_key\n")
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.deepEqual(inference, { authorization: "Bearer ksk_example_api_key", tokenType: "API_KEY" })
+  })
+
   it("never lets a request header declare an OAuth token as an API key", async () => {
     let tokenTypes: Array<string | null> = []
     const output = await streamOnce((async (input: RequestInfo | URL, init?: RequestInit) => {
