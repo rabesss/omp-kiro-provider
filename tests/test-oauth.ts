@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, describe, it } from "node:test"
-import type { AssistantMessageEvent, AssistantMessageLike, StreamOptions } from "../src/types.ts"
+import type { AssistantMessageEvent, AssistantMessageLike, ModelLike, StreamOptions } from "../src/types.ts"
 
 // Isolate the public login/refresh API from the developer's credentials.
 const home = mkdtempSync(join(tmpdir(), "omp-kiro-oauth-"))
@@ -369,6 +369,7 @@ describe("cancelling while the profile is resolved", () => {
 /** Returns a function that streams one "Reply OK" turn through `fetchImpl` per call. */
 function kiroTurns(
   fetchImpl: typeof fetch,
+  model: Partial<ModelLike> = {},
 ): (apiKey: string, options?: StreamOptions) => Promise<AssistantMessageLike> {
   const streamKiro = createStreamKiro({
     apiBase: "https://runtime.us-east-1.kiro.dev",
@@ -398,7 +399,7 @@ function kiroTurns(
   })
   return (apiKey, options = {}) => streamKiro({
     id: "claude-opus-5-5", name: "Claude Opus 5.5", api: "kiro-custom", provider: "kiro",
-    reasoning: false, input: ["text"], contextWindow: 1_000_000, maxTokens: 128_000,
+    reasoning: false, input: ["text"], contextWindow: 1_000_000, maxTokens: 128_000, ...model,
   }, { messages: [{ role: "user", content: "Reply OK" }] }, { ...options, apiKey }).result()
 }
 
@@ -485,18 +486,47 @@ describe("reasoning stream", () => {
     for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve))
   }
 
-  it("retries a turn that only reasoned", async () => {
-    const bodies = ['{"text":"Thinking"}', '{"text":"Thinking"}{"content":"OK"}']
-    let inferenceCalls = 0
-    const output = await streamOnce((async (input: RequestInfo | URL) => {
+  /** Answers inference with `bodies` in turn; counts the calls. */
+  const kiro = (bodies: string[]) => {
+    const calls = { inference: 0 }
+    const fetchImpl = (async (input: RequestInfo | URL) => {
       if (new URL(String(input)).pathname === "/List-Available-Profiles") {
         return response({ profiles: [{ arn: profileArn }] })
       }
-      return new Response(bodies[inferenceCalls++])
-    }) as typeof fetch, "reasoning-only-token", { reasoning: "high" })
+      return new Response(bodies[calls.inference++])
+    }) as typeof fetch
+    return { calls, fetchImpl }
+  }
+
+  it("retries an empty turn", async () => {
+    const { calls, fetchImpl } = kiro(["", '{"content":"OK"}'])
+    const output = await streamOnce(fetchImpl, "empty-turn-token", { reasoning: "high" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
-    assert.equal(inferenceCalls, 2)
+    assert.equal(calls.inference, 2)
+  })
+
+  it("reports a turn that only reasoned instead of replaying the shown reasoning", async () => {
+    const { calls, fetchImpl } = kiro(['{"text":"Thinking"}', '{"text":"Thinking"}{"content":"OK"}'])
+    const output = await streamOnce(fetchImpl, "reasoning-only-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "error")
+    assert.match(output.errorMessage ?? "", /after reasoning, without an answer/)
+    assert.equal(calls.inference, 1)
+  })
+
+  it("keeps the hidden-reasoning breadcrumb ahead of the answer across a retry", async () => {
+    const { calls, fetchImpl } = kiro(["", '{"content":"OK"}'])
+    const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true })(
+      "hidden-reasoning-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.equal(calls.inference, 2)
     assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
+  })
+
+  it("counts reasoning toward output tokens when Kiro reports no usage", async () => {
+    const { fetchImpl } = kiro([`{"text":"${"x".repeat(400)}"}{"content":"OK"}`])
+    const output = await streamOnce(fetchImpl, "reasoning-usage-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.equal(output.usage.output, 100)
   })
 
   it("treats reasoning as stream activity before the first answer", async (t) => {

@@ -422,6 +422,7 @@ export function createStreamKiro(deps: CoreDependencies) {
 
       // Hidden reasoning state (hoisted for cleanup in error paths)
       let hiddenThinkingIndex: number | null = null
+      let hiddenThinkingBlock: ThinkingContent | undefined
       let hiddenMarkerTimer: ReturnType<typeof setTimeout> | null = null
       let hiddenMarkerEmitted = false
 
@@ -492,6 +493,7 @@ export function createStreamKiro(deps: CoreDependencies) {
             }
             const delta = event.text
             reasoningBlock.thinking += delta
+            totalContentLength += delta.length
             eventBuffer.push({ type: "thinking_delta", contentIndex: currentReasoningIdx, delta, partial: output })
             break
           }
@@ -562,7 +564,8 @@ export function createStreamKiro(deps: CoreDependencies) {
 
       // --- Helper: reset per-attempt state and discard buffer ---
       const resetAttemptState = () => {
-        output.content = []
+        // An open hidden-reasoning breadcrumb is already on screen; keep it at its index.
+        output.content = hiddenThinkingIndex !== null && hiddenThinkingBlock ? [hiddenThinkingBlock] : []
         output.stopReason = "stop"
         output.errorMessage = undefined
         textBlock = undefined
@@ -711,6 +714,7 @@ export function createStreamKiro(deps: CoreDependencies) {
               thinking: "",
               redacted: true,
             }
+            hiddenThinkingBlock = block
             output.content.push(block)
             stream.push({ type: "thinking_start", contentIndex: hiddenThinkingIndex, partial: output })
             hiddenMarkerEmitted = false
@@ -897,9 +901,10 @@ export function createStreamKiro(deps: CoreDependencies) {
             }
 
             // Empty response detection: got 200 but no answer text or tool call.
-            // Reasoning alone is not an answer.
-            const hasContent = output.content.some((block) => block.type !== "thinking")
-            if (!hasContent && outerAttempt < maxAttempts - 1) {
+            // Reasoning alone is not an answer, but once it is on screen a retry
+            // would show it twice, so report the turn instead.
+            const hasAnswer = output.content.some((block) => block.type !== "thinking")
+            if (!hasAnswer && !attemptEventsFlushed && outerAttempt < maxAttempts - 1) {
               try { await reader?.cancel() } catch { /* ok */ }
               try { reader?.releaseLock() } catch { /* ok */ }
               reader = undefined
@@ -908,8 +913,10 @@ export function createStreamKiro(deps: CoreDependencies) {
             }
 
             // Last attempt returned empty — error instead of silent empty response
-            if (!hasContent) {
-              throw new Error("Kiro returned an empty response after all retries")
+            if (!hasAnswer) {
+              throw new Error(attemptEventsFlushed
+                ? "Kiro ended the turn after reasoning, without an answer"
+                : "Kiro returned an empty response after all retries")
             }
 
             // Success — finalize blocks and flush buffered events
