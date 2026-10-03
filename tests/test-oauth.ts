@@ -651,8 +651,11 @@ describe("tool calls written as text", () => {
 
   it("recovers one from a model that streams without thinking tags", async () => {
     const { fetchImpl } = kiro([content(bracketCall)])
-    const output = await kiroTurns(fetchImpl, { id: "minimax-m2-5" })("text-tool-token")
+    const events: AssistantMessageEvent[] = []
+    const output = await kiroTurns(fetchImpl, { id: "minimax-m2-5" }, {}, events)("text-tool-token")
     assert.equal(output.stopReason, "toolUse", output.errorMessage)
+    assert.deepEqual(events.map((event) => event.type),
+      ["start", "text_start", "text_delta", "toolcall_start", "toolcall_end", "text_end", "done"])
     const calls = output.content.flatMap((block) => block.type === "toolCall" ? [[block.name, block.arguments]] : [])
     assert.deepEqual(calls, [["read", { path: "a" }]])
   })
@@ -680,6 +683,18 @@ describe("tool calls written as text", () => {
     const output = await kiroTurns(fetchImpl, { reasoning: true })("claude-text-token", { reasoning: "high" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(output.content, [{ type: "text", text }])
+  })
+})
+
+describe("cancelling a stream", () => {
+  // Cancelling the reader ends a pending read as if the stream had finished.
+  it("reports an abort that lands while a read is pending", async () => {
+    const controller = new AbortController()
+    const open = new ReadableStream<Uint8Array>({ start(stream) { stream.enqueue(frames(content("partial"))) } })
+    const { fetchImpl } = kiro([open])
+    setTimeout(() => controller.abort(), 200)
+    const output = await kiroTurns(fetchImpl)("abort-mid-stream-token", { signal: controller.signal })
+    assert.equal(output.stopReason, "aborted", output.errorMessage)
   })
 })
 

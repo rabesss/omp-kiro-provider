@@ -852,9 +852,9 @@ export function createStreamKiro(deps: CoreDependencies) {
                 const { done, value } = await raceAbort(reader.read(), readAbort.signal)
                 clearTimeout(readTimeoutTimer)
 
-                if (done) break
-
+                // Cancelling the reader on abort also ends the read as `done`.
                 if (controller.signal.aborted) throw abortError("Aborted")
+                if (done) break
 
                 const events = parser.feed(value)
                 for (const event of events) {
