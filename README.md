@@ -147,8 +147,9 @@ its cached catalog or `models.json`.
 
 The provider does not write `models.json` at runtime. There is no weekly updater.
 
-`omp --list-models kiro` shows the models your account can use. New Kiro models appear there,
-and retired ones disappear, with no change to `models.json`. Edit it only to correct metadata
+Once discovery has run, `omp --list-models kiro` shows the models your account can use; until then
+it shows the `models.json` fallback, which may include models your account lacks. New Kiro models
+appear in the discovered list, and retired ones disappear, with no change to `models.json`. Edit it only to correct metadata
 the catalog gets wrong or leaves out, in a reviewable PR, and run the test suite before merging.
 
 ## Development
