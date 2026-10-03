@@ -108,6 +108,10 @@ omp -p --model kiro/qwen3-coder-next "Reply briefly."
 
 Do not use `--provider kiro`; OMP resolves extension-defined providers through qualified `--model kiro/<model-id>` selectors.
 
+Only one Kiro response streams at a time across every `omp` session on the machine; other
+sessions and subagents wait their turn, because parallel streams on one account draw throttling.
+Set `OMP_KIRO_STREAM_GATE=0` (or `KIRO_STREAM_GATE=0`) to let them stream in parallel.
+
 ## Models
 
 With a Kiro OAuth or API credential, the provider resolves the account profile and calls

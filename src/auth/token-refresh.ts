@@ -1,14 +1,9 @@
 /**
  * Token refresh for Kiro — social (Google/GitHub) and AWS SSO OIDC (Builder ID).
  *
- * Both flows verified against kiro-gateway's KiroAuthManager and kiro-auto's
- * auth.ts. Consensus on endpoints, headers, and body format is documented in
- * the implementation plan.
- *
- * IMPORTANT for anti-detection:
- * - Social refresh uses KiroIDE User-Agent with fingerprint
- * - OIDC refresh uses plain Content-Type (no KiroIDE branding)
- * - Both use JSON body with camelCase field names
+ * Endpoints, headers, and body format follow kiro-gateway's KiroAuthManager and
+ * kiro-auto's auth.ts. Both flows send a KiroIDE User-Agent and a JSON body with
+ * camelCase field names.
  */
 
 

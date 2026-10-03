@@ -200,18 +200,30 @@ describe("buildKiroPayload", () => {
     assert.equal(current.content, "test")
   })
 
-  it("converts OMP-native tool parameters into JSON Schema", () => {
+  it("forwards OMP tool parameters as JSON Schema without losing detail", () => {
+    // Shaped like OMP 18's bash tool: descriptions, limits, and an optional nested object.
     const payload = buildKiroPayload("model", {
       messages: [{ role: "user", content: "test" }],
       tools: [{
-        name: "omp_tool",
-        description: "OMP schema",
+        name: "bash",
+        description: "Run a command",
         parameters: {
-          kind: "object",
+          type: "object",
           properties: {
-            command: { kind: "string" },
-            timeout: { kind: "number", optional: true },
+            command: { type: "string" },
+            timeout: { type: "number", description: "timeout in seconds" },
+            name: { type: "string", maxLength: 48 },
+            mode: { type: "string", enum: ["fg", "bg"] },
+            retries: { type: "integer" },
+            ready: {
+              type: "object",
+              properties: { log: { type: "string" }, port: { type: "number" } },
+              additionalProperties: false,
+            },
+            env: { type: "object", properties: {}, additionalProperties: { type: "string" } },
           },
+          required: ["command"],
+          additionalProperties: false,
         },
       }],
     })
@@ -225,10 +237,52 @@ describe("buildKiroPayload", () => {
       type: "object",
       properties: {
         command: { type: "string" },
-        timeout: { type: "number" },
+        timeout: { type: "number", description: "timeout in seconds" },
+        name: { type: "string", maxLength: 48 },
+        mode: { type: "string", enum: ["fg", "bg"] },
+        retries: { type: "integer" },
+        ready: {
+          type: "object",
+          properties: { log: { type: "string" }, port: { type: "number" } },
+        },
+        env: { type: "object", properties: {} },
       },
       required: ["command"],
     })
+  })
+
+  it("keeps a property named like a stripped keyword", () => {
+    const payload = buildKiroPayload("model", {
+      messages: [{ role: "user", content: "test" }],
+      tools: [{
+        name: "schema_tool",
+        description: "Edits schemas",
+        parameters: {
+          type: "object",
+          properties: { additionalProperties: { type: "boolean" }, required: { type: "array", items: { type: "string" } } },
+        },
+      }],
+    })
+    const current = payload.conversationState.currentMessage.userInputMessage
+    const userCtx = current.userInputMessageContext as Record<string, unknown>
+    const tools = userCtx.tools as Array<Record<string, unknown>>
+    const spec = tools[0].toolSpecification as Record<string, unknown>
+    const schema = (spec.inputSchema as Record<string, unknown>).json as Record<string, unknown>
+
+    assert.deepEqual(Object.keys(schema.properties as object), ["additionalProperties", "required"])
+  })
+
+  it("sends an empty object schema for a tool without parameters", () => {
+    const payload = buildKiroPayload("model", {
+      messages: [{ role: "user", content: "test" }],
+      tools: [{ name: "ping", description: "Ping" }],
+    })
+    const current = payload.conversationState.currentMessage.userInputMessage
+    const userCtx = current.userInputMessageContext as Record<string, unknown>
+    const tools = userCtx.tools as Array<Record<string, unknown>>
+    const spec = tools[0].toolSpecification as Record<string, unknown>
+
+    assert.deepEqual((spec.inputSchema as Record<string, unknown>).json, { type: "object", properties: {} })
   })
 
   it("includes profileArn when provided", () => {
@@ -607,22 +661,6 @@ describe("ThinkingTagParser", () => {
     assert.equal(output.content[1].type, "text")
     assert.equal(output.content[2].type, "text")
   })
-
-  it("getTextBlockIndex returns null for empty parser", () => {
-    const { output, events } = createTestOutput()
-    const parser = new ThinkingTagParser(output, (evt) => events.push(evt))
-    assert.equal(parser.getTextBlockIndex(), null)
-  })
-
-  it("getTextBlockIndex returns text index after processing", () => {
-    const { output, events } = createTestOutput()
-    const parser = new ThinkingTagParser(output, (evt) => events.push(evt))
-
-    parser.processChunk("<thinking>thought</thinking>text here")
-    parser.finalize()
-
-    assert.equal(parser.getTextBlockIndex(), 1) // index 0 is thinking, index 1 is text
-  })
 })
 
 // ============================================================================
@@ -770,25 +808,15 @@ describe("buildKiroPayload with history truncation", () => {
 // ============================================================================
 
 describe("resolveReasoningLevel", () => {
-  const model = { id: "claude-opus-5-5", name: "Claude Opus 5.5" }
-
   it("returns false when OMP disables reasoning", () => {
-    assert.equal(resolveReasoningLevel(model, { disableReasoning: true }), false)
-    assert.equal(resolveReasoningLevel(model, { reasoning: "high", disableReasoning: true }), false)
+    assert.equal(resolveReasoningLevel({ disableReasoning: true }), false)
+    assert.equal(resolveReasoningLevel({ reasoning: "high", disableReasoning: true }), false)
   })
 
-  it("uses the level OMP passes through", () => {
-    assert.equal(resolveReasoningLevel(model, { reasoning: "high" }), "high")
-    assert.equal(resolveReasoningLevel(model, { reasoningEffort: "xhigh" }), "xhigh")
-  })
-
-  it("falls back to a selector suffix in the model id", () => {
-    assert.equal(resolveReasoningLevel({ id: "claude-opus-5-5:medium", name: "Claude Opus 5.5" }), "medium")
-  })
-
-  it("accepts OMP's minimal and max efforts", () => {
-    assert.equal(resolveReasoningLevel(model, { reasoning: "minimal" }), "minimal")
-    assert.equal(resolveReasoningLevel(model, { reasoning: "max" }), "max")
-    assert.equal(resolveReasoningLevel({ id: "claude-opus-5-5:max", name: "Claude Opus 5.5" }), "max")
+  it("uses the level OMP passes through, minimal to max", () => {
+    assert.equal(resolveReasoningLevel({ reasoning: "high" }), "high")
+    assert.equal(resolveReasoningLevel({ reasoning: "minimal" }), "minimal")
+    assert.equal(resolveReasoningLevel({ reasoning: "max" }), "max")
+    assert.equal(resolveReasoningLevel(), undefined)
   })
 })

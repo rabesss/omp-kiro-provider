@@ -1,8 +1,7 @@
 /**
  * Kiro provider for OMP.
  *
- * Native OMP local plugin that integrates Kiro (kiro.dev) as a provider,
- * following the exact same contract as omp-commandcode-provider.
+ * Native OMP local plugin that integrates Kiro (kiro.dev) as a provider.
  *
  * Supports:
  * - API Key login (ksk_xxx)
@@ -10,7 +9,7 @@
  * - AWS Builder ID device code flow (browser login)
  * - Automatic token refresh (social + OIDC)
  *
- * Anti-detection: mimics real Kiro IDE headers exactly.
+ * Inference requests use the Kiro CLI's headers.
  * No external dependencies — pure TypeScript, Node builtins only.
  */
 
@@ -42,12 +41,8 @@ const streamKiro = createStreamKiro({
   managementBase: MANAGEMENT_BASE,
   fetchImpl: fetch,
   createStream: createAssistantMessageEventStream,
-  cwd: () => process.cwd(),
   now: () => Date.now(),
-  uuid: () => crypto.randomUUID(),
   env: process.env as Record<string, string | undefined>,
-  authPaths: [],
-  homeDir: "",
   calculateCost,
   hiddenReasoningModels: MODELS.filter((model) => model.reasoningHidden).map((model) => model.id),
 })

@@ -120,12 +120,8 @@ describe("organization login", () => {
         result: () => result,
         async *[Symbol.asyncIterator]() { yield* events },
       }),
-      cwd: () => home,
       now: () => Date.now(),
-      uuid: () => "test-conversation",
       env: { OMP_KIRO_STREAM_GATE: "0" },
-      authPaths: [],
-      homeDir: home,
       calculateCost: () => {},
     })
     const output = await streamKiro({
@@ -350,12 +346,8 @@ describe("cancelling while the profile is resolved", () => {
         result: () => result,
         async *[Symbol.asyncIterator]() { yield* events },
       }),
-      cwd: () => home,
       now: () => Date.now(),
-      uuid: () => "test-conversation",
       env: { OMP_KIRO_STREAM_GATE: "0" },
-      authPaths: [],
-      homeDir: home,
       calculateCost: () => {},
     })
     const output = await streamKiro({
@@ -394,12 +386,8 @@ function kiroTurns(
         async *[Symbol.asyncIterator]() { yield* events },
       }
     },
-    cwd: () => home,
     now: () => Date.now(),
-    uuid: () => "test-conversation",
     env: { OMP_KIRO_STREAM_GATE: "0" },
-    authPaths: [],
-    homeDir: home,
     calculateCost: () => {},
     ...deps,
   })
@@ -655,6 +643,26 @@ describe("reasoning stream", () => {
     }) as typeof fetch, "max-effort-token", { reasoning: "max" })
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.match(body, /<max_thinking_length>50000<\/max_thinking_length>/)
+  })
+})
+
+describe("tool calls written as text", () => {
+  const bracketCall = '[Called read with args: {"path":"a"}]'
+
+  it("recovers one from a model that streams without thinking tags", async () => {
+    const { fetchImpl } = kiro([content(bracketCall)])
+    const output = await kiroTurns(fetchImpl, { id: "minimax-m2-5" })("text-tool-token")
+    assert.equal(output.stopReason, "toolUse", output.errorMessage)
+    const calls = output.content.flatMap((block) => block.type === "toolCall" ? [[block.name, block.arguments]] : [])
+    assert.deepEqual(calls, [["read", { path: "a" }]])
+  })
+
+  it("leaves Claude's text as written", async () => {
+    const text = `Kiro history shows ${bracketCall} for each call.`
+    const { fetchImpl } = kiro([content(text)])
+    const output = await kiroTurns(fetchImpl, { reasoning: true })("claude-text-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.deepEqual(output.content, [{ type: "text", text }])
   })
 })
 

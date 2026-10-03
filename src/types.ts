@@ -174,12 +174,8 @@ export interface CoreDependencies {
   managementBase?: string
   fetchImpl: typeof fetch
   createStream: () => AssistantMessageEventStreamLike
-  cwd: () => string
   now: () => number
-  uuid: () => string
   env: Record<string, string | undefined>
-  authPaths: string[]
-  homeDir: string
   calculateCost: (model: ModelLike, usage: Usage) => void
   /**
    * Ids of models whose reasoning stays server-side. OMP drops custom model
@@ -187,9 +183,11 @@ export interface CoreDependencies {
    */
   hiddenReasoningModels?: Iterable<string>
 }
+
 // ---------------------------------------------------------------------------
-// Kiro-specific auth metadata (stored separately from OMP credentials)
+// OMP login callbacks
 // ---------------------------------------------------------------------------
+
 export interface OAuthAuthInfo { url: string; instructions?: string }
 export interface OAuthPrompt { message: string; placeholder?: string; allowEmpty?: boolean; secret?: boolean }
 export interface OAuthLoginCallbacks {
@@ -197,6 +195,7 @@ export interface OAuthLoginCallbacks {
   onPrompt(prompt: OAuthPrompt): Promise<string>
   onProgress?(message: string): void
 }
+
 // ---------------------------------------------------------------------------
 // Kiro-specific auth metadata (stored separately from OMP credentials)
 // ---------------------------------------------------------------------------

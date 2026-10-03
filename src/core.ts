@@ -3,7 +3,7 @@
  *
  * Supports:
  * - AWS Event Stream binary response decoding
- * - 429/5xx retry with exponential backoff
+ * - 5xx retry with exponential backoff (429 is backpressure, not retried)
  * - INSUFFICIENT_MODEL_CAPACITY inner retry (common on free tier)
  * - First-token timeout (180s) + idle stream timeout (300s)
  * - Empty response detection with retry
@@ -77,34 +77,10 @@ function isReasoningLevel(value: unknown): value is ReasoningLevel {
   return typeof value === "boolean" || (REASONING_LEVELS as readonly unknown[]).includes(value)
 }
 
-function readReasoningField(source: unknown, key: string): ReasoningLevel | undefined {
-  if (!source || typeof source !== "object") return undefined
-  const value = (source as Record<string, unknown>)[key]
-  return isReasoningLevel(value) ? value : undefined
-}
-
-export function shouldRetryHttpStatus(status: number): boolean {
-  if (status === 429) return false
-  return status >= 500
-}
-
-export function resolveReasoningLevel(model: Pick<ModelLike, "id" | "name">, options?: StreamOptions): ReasoningLevel | undefined {
+export function resolveReasoningLevel(options?: StreamOptions): ReasoningLevel | undefined {
   // OMP signals "thinking off" by disabling reasoning rather than by name.
   if (options?.disableReasoning === true) return false
-
-  const direct = readReasoningField(options, "reasoning")
-  if (direct !== undefined) return direct
-
-  const legacy = readReasoningField(options, "reasoningEffort")
-  if (legacy !== undefined) return legacy
-
-  const metadata = options && typeof options === "object" ? (options as Record<string, unknown>).metadata : undefined
-  const metadataReasoning = readReasoningField(metadata, "reasoning") ?? readReasoningField(metadata, "reasoningEffort")
-  if (metadataReasoning !== undefined) return metadataReasoning
-
-  const selector = `${model.id}:${model.name}`
-  const match = selector.match(/:(xhigh|high|medium|low|minimal|max|off)(?:\b|$)/)
-  return match ? (match[1] as Exclude<ReasoningLevel, boolean>) : undefined
+  return isReasoningLevel(options?.reasoning) ? options.reasoning : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -117,23 +93,6 @@ function defaultUsage(): Usage {
 
 function abortError(message = "The operation was aborted"): DOMException {
   return new DOMException(message, "AbortError")
-}
-
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
-}
-
-function recordOrEmpty(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {}
 }
 
 function headersToRecord(headers: Headers): Record<string, string> {
@@ -193,7 +152,7 @@ function resyncCliToken(): string | undefined {
 // Build headers for Kiro API request
 // ---------------------------------------------------------------------------
 
-export function buildKiroHeaders(accessToken: string): Record<string, string> {
+function buildKiroHeaders(accessToken: string): Record<string, string> {
   // Impersonate Kiro CLI (rust SDK) — matches mikeyobrien, hongyilyu, MasuRii
   const mid = randomUUID().replace(/-/g, "")
   const ua = `aws-sdk-rust/1.0.0 ua/2.1 os/other lang/rust api/codewhispererstreaming#1.28.3 m/E app/AmazonQ-For-CLI md/appVersion-1.28.3-${mid}`
@@ -211,6 +170,7 @@ export function buildKiroHeaders(accessToken: string): Record<string, string> {
     ...kiroTokenTypeHeaders(accessToken),
   }
 }
+
 // ---------------------------------------------------------------------------
 // Stream factory
 // ---------------------------------------------------------------------------
@@ -222,9 +182,7 @@ export function createStreamKiro(deps: CoreDependencies) {
   // Models whose reasoning stays server-side, as listed in models.json.
   const hiddenReasoningModels = new Set(deps.hiddenReasoningModels ?? [])
   const fetchImpl = deps.fetchImpl ?? fetch
-  const cwd = deps.cwd ?? (() => process.cwd())
   const now = deps.now ?? (() => Date.now())
-  const uuid = deps.uuid ?? (() => randomUUID())
 
   function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     if (signal.aborted) return Promise.reject(abortError())
@@ -274,7 +232,7 @@ export function createStreamKiro(deps: CoreDependencies) {
     const owner = {
       token,
       pid: process.pid,
-      cwd: cwd(),
+      cwd: process.cwd(),
       startedAt: new Date().toISOString(),
     }
 
@@ -354,8 +312,6 @@ export function createStreamKiro(deps: CoreDependencies) {
       // Discovery trims the key too; a stray space would hide the ksk_ prefix.
       apiKey = apiKey?.trim()
 
-
-
       if (!apiKey) {
         const msg: AssistantMessageLike = {
           role: "assistant",
@@ -427,11 +383,8 @@ export function createStreamKiro(deps: CoreDependencies) {
       let emittedToolCalls = 0
       let sawAnyToolCalls = false
       let totalContentLength = 0
-      let usageInputTokens: number | undefined
-      let usageOutputTokens: number | undefined
-      let usageCacheReadTokens: number | undefined
-      let usageCacheCreationTokens: number | undefined
-      let usageReasoningTokens: number | undefined
+      // Token counts Kiro reported for this attempt; they replace the estimates.
+      let reportedUsage: Partial<Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite" | "reasoning">> = {}
       let contextUsagePercentage = 0
 
       // Hidden reasoning state (hoisted for cleanup in error paths)
@@ -579,11 +532,11 @@ export function createStreamKiro(deps: CoreDependencies) {
           }
 
           case "usage": {
-            if (event.inputTokens !== undefined) usageInputTokens = event.inputTokens
-            if (event.outputTokens !== undefined) usageOutputTokens = event.outputTokens
-            if (event.cacheReadTokens !== undefined) usageCacheReadTokens = event.cacheReadTokens
-            if (event.cacheCreationTokens !== undefined) usageCacheCreationTokens = event.cacheCreationTokens
-            if (event.reasoningTokens !== undefined) usageReasoningTokens = event.reasoningTokens
+            if (event.inputTokens !== undefined) reportedUsage.input = event.inputTokens
+            if (event.outputTokens !== undefined) reportedUsage.output = event.outputTokens
+            if (event.cacheReadTokens !== undefined) reportedUsage.cacheRead = event.cacheReadTokens
+            if (event.cacheCreationTokens !== undefined) reportedUsage.cacheWrite = event.cacheCreationTokens
+            if (event.reasoningTokens !== undefined) reportedUsage.reasoning = event.reasoningTokens
             break
           }
           case "context_usage": {
@@ -618,11 +571,7 @@ export function createStreamKiro(deps: CoreDependencies) {
         emittedToolCalls = 0
         sawAnyToolCalls = false
         totalContentLength = 0
-        usageInputTokens = undefined
-        usageOutputTokens = undefined
-        usageCacheReadTokens = undefined
-        usageCacheCreationTokens = undefined
-        usageReasoningTokens = undefined
+        reportedUsage = {}
         contextUsagePercentage = 0
       }
 
@@ -652,6 +601,19 @@ export function createStreamKiro(deps: CoreDependencies) {
           releasedBreadcrumbIndex = hiddenThinkingIndex
         }
         hiddenThinkingIndex = null
+      }
+
+      // --- Helper: release the response reader ---
+      const releaseReader = async () => {
+        try { await reader?.cancel() } catch { /* may already be closed */ }
+        try { reader?.releaseLock() } catch { /* may already be released */ }
+        reader = undefined
+      }
+
+      // --- Helper: drop this attempt's stream and wait before the next one ---
+      const retryAfter = async (ms: number) => {
+        await releaseReader()
+        await sleep(ms, controller.signal)
       }
 
       // --- Helper: flush buffered events to stream ---
@@ -709,7 +671,7 @@ export function createStreamKiro(deps: CoreDependencies) {
         // --- Thinking / reasoning mode ---
         // Inject <thinking_mode> into system prompt so the model produces <thinking> tags.
         // Skip for reasoningHidden models (server-side reasoning, no tags emitted).
-        const reasoningLevel = resolveReasoningLevel(model, options)
+        const reasoningLevel = resolveReasoningLevel(options)
         thinkingEnabled = reasoningLevel === false || reasoningLevel === "off" ? false : !!reasoningLevel || !!model.reasoning
         reasoningHidden = !!model.reasoningHidden || hiddenReasoningModels.has(model.id)
 
@@ -784,7 +746,7 @@ export function createStreamKiro(deps: CoreDependencies) {
             }, HIDDEN_REASONING_COUNTDOWN_MS)
           }
 
-          // ---- Inner retry loop: handles HTTP-level errors (429/5xx) ----
+          // ---- Inner retry loop: handles HTTP-level errors (5xx, stale CLI token) ----
           let response: Response | undefined
           let cliIdentityResynced = false
           for (let httpAttempt = 0; httpAttempt <= MAX_HTTP_RETRIES; httpAttempt++) {
@@ -834,7 +796,7 @@ export function createStreamKiro(deps: CoreDependencies) {
 
             // Retry only transient server errors. 429 means Kiro is applying
             // account-level backpressure, so local immediate retries amplify it.
-            if (shouldRetryHttpStatus(response.status)) continue
+            if (response.status >= 500) continue
             break
           }
           if (!response) throw new Error("No response from Kiro API after retries")
@@ -875,14 +837,11 @@ export function createStreamKiro(deps: CoreDependencies) {
 
               // Compute per-read timeout based on whether we've seen content yet
               const readTimeoutMs = gotFirstContent ? IDLE_STREAM_TIMEOUT_MS : FIRST_TOKEN_TIMEOUT_MS
+              const readTimeout = () => new RetryableError(
+                `${gotFirstContent ? "Idle stream" : "First token"} timeout after ${readTimeoutMs / 1000}s — retrying`,
+              )
               const elapsed = Date.now() - lastContentTime
-              if (elapsed >= readTimeoutMs) {
-                if (!gotFirstContent) {
-                  throw new RetryableError(`First token timeout after ${readTimeoutMs / 1000}s — retrying`)
-                } else {
-                  throw new RetryableError(`Idle stream timeout after ${readTimeoutMs / 1000}s — retrying`)
-                }
-              }
+              if (elapsed >= readTimeoutMs) throw readTimeout()
 
               // Race reader.read() against idle timeout
               const readDeadline = readTimeoutMs - elapsed
@@ -924,11 +883,7 @@ export function createStreamKiro(deps: CoreDependencies) {
               } catch (err) {
                 clearTimeout(readTimeoutTimer)
                 if (err instanceof DOMException && err.name === "AbortError" && !controller.signal.aborted) {
-                  if (!gotFirstContent) {
-                    throw new RetryableError(`First token timeout after ${readTimeoutMs / 1000}s — retrying`)
-                  } else {
-                    throw new RetryableError(`Idle stream timeout after ${readTimeoutMs / 1000}s — retrying`)
-                  }
+                  throw readTimeout()
                 }
                 throw err
               }
@@ -940,11 +895,7 @@ export function createStreamKiro(deps: CoreDependencies) {
               throw new Error("Kiro ran out of model capacity mid-response (INSUFFICIENT_MODEL_CAPACITY)")
             }
             if (capacityRetryable && outerAttempt < maxAttempts - 1) {
-              try { await reader?.cancel() } catch { /* ok */ }
-              try { reader?.releaseLock() } catch { /* ok */ }
-              reader = undefined
-              const delay = Math.min(2000 * Math.pow(2, outerAttempt), 30_000)
-              await sleep(delay, controller.signal)
+              await retryAfter(Math.min(2000 * Math.pow(2, outerAttempt), 30_000))
               continue // discard buffer, reset state, retry
             }
 
@@ -958,10 +909,7 @@ export function createStreamKiro(deps: CoreDependencies) {
             // would show it twice, so report the turn instead.
             const hasAnswer = sawAnyToolCalls || output.content.some((block) => block.type !== "thinking")
             if (!hasAnswer && !attemptEventsFlushed && outerAttempt < maxAttempts - 1) {
-              try { await reader?.cancel() } catch { /* ok */ }
-              try { reader?.releaseLock() } catch { /* ok */ }
-              reader = undefined
-              await sleep(1000, controller.signal)
+              await retryAfter(1000)
               continue // discard buffer, retry
             }
 
@@ -974,21 +922,23 @@ export function createStreamKiro(deps: CoreDependencies) {
 
             // Success — finalize blocks and flush buffered events
 
-            // 1. Finalize ThinkingTagParser (handles thinking_end + text_end)
+            // 1. Find the answer text; its text_end waits for the cleanup below.
             let textBlockIdx: number | null = null
             if (thinkingParser) {
               thinkingParser.finalize()
               textBlockIdx = thinkingParser.getTextBlockIndex()
-            } else {
-              endTextBlock()
+            } else if (textBlock) {
+              textBlockIdx = currentTextIdx
+              textBlock = undefined
             }
 
             // 2. Finalize any pending tool call
             finalizeToolCall()
 
             // 3. Bracket-style tool call fallback: extract [Called func with args: {...}]
-            //    from text content when no native tool events were emitted.
-            if (!sawAnyToolCalls && textBlockIdx !== null) {
+            //    from text content when no native tool events were emitted. Claude's
+            //    native tool calls are reliable, so its text is never reinterpreted.
+            if (!sawAnyToolCalls && textBlockIdx !== null && !model.id.startsWith("claude-")) {
               const textContent = output.content[textBlockIdx] as TextContent | undefined
               if (textContent && textContent.type === "text") {
                 const bracketResult = parseBracketToolCalls(textContent.text)
@@ -1045,11 +995,7 @@ export function createStreamKiro(deps: CoreDependencies) {
             // Retry only before live deltas have escaped. Retrying after a
             // visible partial response would duplicate content in the UI.
             if (err instanceof RetryableError && !attemptEventsFlushed && outerAttempt < maxAttempts - 1) {
-              try { await reader?.cancel() } catch { /* ok */ }
-              try { reader?.releaseLock() } catch { /* ok */ }
-              reader = undefined
-              const delay = Math.min(2000 * Math.pow(2, outerAttempt), 30_000)
-              await sleep(delay, controller.signal)
+              await retryAfter(Math.min(2000 * Math.pow(2, outerAttempt), 30_000))
               continue // discard buffer, reset state, retry
             }
             throw err // propagate non-retryable or exhausted retries
@@ -1063,19 +1009,8 @@ export function createStreamKiro(deps: CoreDependencies) {
         if (contextUsagePercentage > 0) {
           output.usage.input = Math.round((contextUsagePercentage / 100) * model.contextWindow)
         }
-        if (usageInputTokens !== undefined) {
-          output.usage.input = usageInputTokens
-        }
-        output.usage.output = usageOutputTokens ?? (totalContentLength > 0 ? Math.max(1, Math.floor(totalContentLength / 4)) : 0)
-        if (usageCacheReadTokens !== undefined) {
-          output.usage.cacheRead = usageCacheReadTokens
-        }
-        if (usageCacheCreationTokens !== undefined) {
-          output.usage.cacheWrite = usageCacheCreationTokens
-        }
-        if (usageReasoningTokens !== undefined) {
-          output.usage.reasoning = usageReasoningTokens
-        }
+        output.usage.output = totalContentLength > 0 ? Math.max(1, Math.floor(totalContentLength / 4)) : 0
+        Object.assign(output.usage, reportedUsage)
         output.usage.totalTokens =
           output.usage.input +
           output.usage.output +
@@ -1105,8 +1040,7 @@ export function createStreamKiro(deps: CoreDependencies) {
       } finally {
         cancelHiddenMarkerTimer()
         options?.signal?.removeEventListener("abort", abortUpstream)
-        try { await reader?.cancel() } catch { /* may already be closed */ }
-        try { reader?.releaseLock() } catch { /* may already be released */ }
+        await releaseReader()
         releaseKiroStreamGate?.()
       }
     }

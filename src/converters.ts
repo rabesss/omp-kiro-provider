@@ -103,20 +103,14 @@ function imagesToKiroFormat(images: ImageContent[]): unknown[] | undefined {
   }))
 }
 
-function systemPromptText(prompt: ContextLike["systemPrompt"]): string {
-  return prompt ?? ""
-}
-
 // ---------------------------------------------------------------------------
 // Tool conversion
 // ---------------------------------------------------------------------------
 
-function toolsToKiroFormat(
-  tools?: readonly ToolLike[],
-): { tools?: unknown[] } {
-  if (!tools || tools.length === 0) return {}
+function toolsToKiroFormat(tools?: readonly ToolLike[]): unknown[] | undefined {
+  if (!tools || tools.length === 0) return undefined
 
-  const converted = tools.map((tool) => {
+  return tools.map((tool) => {
     const name = truncateToolName(tool.name)
     let description = tool.description?.trim() || `Tool: ${tool.name}`
     if (description.length > KIRO_MAX_TOOL_DESCRIPTION) {
@@ -124,20 +118,17 @@ function toolsToKiroFormat(
       description = description.slice(0, KIRO_MAX_TOOL_DESCRIPTION - suffix.length) + suffix
     }
 
+    // OMP passes plain JSON Schema; forward it whole so property descriptions,
+    // limits, and optional fields reach the model.
+    const schema = tool.input_schema ?? tool.parameters
     return {
       toolSpecification: {
         name,
         description,
-        inputSchema: {
-          json: sanitizeJsonSchema(
-            tool.input_schema ?? toJsonSchema(tool.parameters),
-          ),
-        },
+        inputSchema: { json: isRecord(schema) ? sanitizeJsonSchema(schema) : { type: "object", properties: {} } },
       },
     }
   })
-
-  return { tools: converted }
 }
 
 /**
@@ -152,74 +143,12 @@ function sanitizeJsonSchema(schema: unknown): unknown {
   for (const [key, value] of Object.entries(schema)) {
     if (key === "additionalProperties") continue
     if (key === "required" && Array.isArray(value) && value.length === 0) continue
-    sanitized[key] = sanitizeJsonSchema(value)
+    // `properties` maps names to schemas; a property may be named like a keyword.
+    sanitized[key] = key === "properties" && isRecord(value)
+      ? Object.fromEntries(Object.entries(value).map(([name, child]) => [name, sanitizeJsonSchema(child)]))
+      : sanitizeJsonSchema(value)
   }
   return sanitized
-}
-
-function toJsonSchema(schema: unknown): unknown {
-  if (!isRecord(schema)) return {}
-
-  const kind = typeof schema.kind === "string"
-    ? schema.kind
-    : typeof schema.type === "string"
-      ? schema.type
-      : undefined
-  if (Array.isArray(schema.enum)) {
-    return { type: typeof schema.enum[0], enum: schema.enum }
-  }
-
-  switch (kind) {
-    case "string":
-    case "String":
-    case "number":
-    case "Number":
-    case "boolean":
-    case "Boolean":
-      return { type: kind.toLowerCase() }
-    case "object":
-    case "Object": {
-      const properties: Record<string, unknown> = {}
-      const inferredRequired: string[] = []
-      const sourceProperties = isRecord(schema.properties) ? schema.properties : {}
-      const optional = Array.isArray(schema.optional) ? schema.optional : []
-      for (const [key, value] of Object.entries(sourceProperties)) {
-        properties[key] = toJsonSchema(value)
-        if (!(isRecord(value) && value.optional === true) && !optional.includes(key)) {
-          inferredRequired.push(key)
-        }
-      }
-
-      const explicitRequired = Array.isArray(schema.required) ? schema.required : undefined
-      const required = explicitRequired ?? inferredRequired
-      return {
-        type: "object",
-        ...(Object.keys(properties).length > 0 ? { properties } : {}),
-        ...(required.length > 0 ? { required } : {}),
-      }
-    }
-    case "array":
-    case "Array":
-      return { type: "array", items: toJsonSchema(schema.items ?? schema.element) }
-    case "union":
-    case "Union": {
-      const variants = Array.isArray(schema.variants)
-        ? schema.variants
-        : Array.isArray(schema.anyOf)
-          ? schema.anyOf
-          : []
-      for (const variant of variants) {
-        const converted = toJsonSchema(variant)
-        if (isRecord(converted) && Object.keys(converted).length > 0) return converted
-      }
-      return {}
-    }
-    case "optional":
-    case "Optional":
-      return toJsonSchema(schema.wrapped ?? schema.inner)
-    default:
-      return {}
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -254,9 +183,6 @@ function toolCallsToKiroToolUses(
   }))
 }
 
-// ---------------------------------------------------------------------------
-// History builder (with alternation enforcement)
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // History management (adapted from mikeyobrien/pi-provider-kiro)
 // ---------------------------------------------------------------------------
@@ -366,9 +292,7 @@ function hasUserMessage(entry: unknown): boolean {
 }
 
 function hasToolUses(entry: unknown): boolean {
-  if (!isRecord(entry)) return false
-  const arm = entry.assistantResponseMessage as Record<string, unknown> | undefined
-  return Array.isArray(arm?.toolUses) && (arm!.toolUses as unknown[]).length > 0
+  return getToolUses(entry).length > 0
 }
 
 function hasContent(entry: unknown): boolean {
@@ -378,10 +302,7 @@ function hasContent(entry: unknown): boolean {
 }
 
 function hasToolResults(entry: unknown): boolean {
-  if (!isRecord(entry)) return false
-  const uim = entry.userInputMessage as Record<string, unknown> | undefined
-  const ctx = uim?.userInputMessageContext as Record<string, unknown> | undefined
-  return Array.isArray(ctx?.toolResults) && (ctx!.toolResults as unknown[]).length > 0
+  return getToolResults(entry).length > 0
 }
 
 function getToolUses(entry: unknown): unknown[] {
@@ -572,13 +493,12 @@ export function buildKiroPayload(
   // Clear truncation map for each new request
   clearTruncationMap()
 
-  const sysPrompt = systemPromptText(context.systemPrompt)
   // OMP selectors use dash-form versions; Kiro's API expects dot-form.
   const kiroModelId = modelId.replace(/(\d)-(\d)(?!\d)/g, "$1.$2")
   let { history, currentContent, currentImages, currentToolResults } = buildHistory(
     context.messages,
     kiroModelId,
-    sysPrompt,
+    context.systemPrompt ?? "",
   )
 
   // Truncate history to fit context window (scaled dynamically)
@@ -597,7 +517,7 @@ export function buildKiroPayload(
 
   // Add tools and tool results to userInputMessageContext
   const userCtx: Record<string, unknown> = {}
-  const { tools: kiroTools } = toolsToKiroFormat(context.tools)
+  const kiroTools = toolsToKiroFormat(context.tools)
   if (kiroTools) userCtx.tools = kiroTools
   if (currentToolResults) userCtx.toolResults = currentToolResults
   if (Object.keys(userCtx).length > 0) {
