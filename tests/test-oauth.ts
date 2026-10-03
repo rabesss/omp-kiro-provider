@@ -522,6 +522,15 @@ describe("reasoning stream", () => {
     assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
   })
 
+  it("keeps a hidden-reasoning model's reasoning off screen", async () => {
+    const { fetchImpl } = kiro(['{"text":"secret"}{"content":"OK"}'])
+    const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true })(
+      "hidden-reasoning-text-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.deepEqual(output.content.map((block) => block.type), ["thinking", "text"])
+    assert.ok(!JSON.stringify(output.content).includes("secret"))
+  })
+
   it("counts reasoning toward output tokens when Kiro reports no usage", async () => {
     const { fetchImpl } = kiro([`{"text":"${"x".repeat(400)}"}{"content":"OK"}`])
     const output = await streamOnce(fetchImpl, "reasoning-usage-token", { reasoning: "high" })

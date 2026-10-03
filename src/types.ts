@@ -133,7 +133,7 @@ export interface StreamOptions {
   signal?: AbortSignal
   headers?: Record<string, string>
   maxTokens?: number
-  reasoning?: boolean | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+  reasoning?: boolean | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
   /** Set by OMP for `--thinking off`; takes precedence over `reasoning`. */
   disableReasoning?: boolean
   toolChoice?: "auto" | "none" | string

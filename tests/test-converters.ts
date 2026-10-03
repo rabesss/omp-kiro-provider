@@ -817,6 +817,7 @@ describe("resolveReasoningLevel", () => {
 
   it("returns false when OMP disables reasoning", () => {
     assert.equal(resolveReasoningLevel(model, { disableReasoning: true }), false)
+    assert.equal(resolveReasoningLevel(model, { reasoning: "high", disableReasoning: true }), false)
   })
 
   it("uses the level OMP passes through", () => {
