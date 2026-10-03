@@ -949,7 +949,7 @@ export function createStreamKiro(deps: CoreDependencies) {
                     const toolCall: ToolCallContent = {
                       type: "toolCall",
                       id: btc.toolUseId,
-                      name: btc.name,
+                      name: resolveToolName(btc.name),
                       arguments: btc.arguments,
                     }
                     output.content.push(toolCall)

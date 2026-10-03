@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, describe, it } from "node:test"
-import type { AssistantMessageEvent, AssistantMessageLike, CoreDependencies, ModelLike, StreamOptions } from "../src/types.ts"
+import type { AssistantMessageEvent, AssistantMessageLike, ContextLike, CoreDependencies, ModelLike, StreamOptions } from "../src/types.ts"
 import { chunked, content, eventStream, frame, frames, reasoning } from "./event-frames.ts"
 
 // Isolate the public login/refresh API from the developer's credentials.
@@ -14,7 +14,7 @@ const previousProfile = process.env.USERPROFILE
 process.env.HOME = home
 process.env.USERPROFILE = home
 const { login, refreshToken, getStoredProfileArn } = await import("../src/oauth.ts")
-const { createStreamKiro } = await import("../src/core.ts")
+const { buildKiroPayload, createStreamKiro } = await import("../src/core.ts")
 after(() => {
   if (previousHome === undefined) delete process.env.HOME
   else process.env.HOME = previousHome
@@ -368,7 +368,7 @@ function kiroTurns(
   model: Partial<ModelLike> = {},
   deps: Partial<CoreDependencies> = {},
   events: AssistantMessageEvent[] = [],
-): (apiKey: string, options?: StreamOptions) => Promise<AssistantMessageLike> {
+): (apiKey: string, options?: StreamOptions, context?: ContextLike) => Promise<AssistantMessageLike> {
   const streamKiro = createStreamKiro({
     apiBase: "https://runtime.us-east-1.kiro.dev",
     fetchImpl,
@@ -391,10 +391,10 @@ function kiroTurns(
     calculateCost: () => {},
     ...deps,
   })
-  return (apiKey, options = {}) => streamKiro({
+  return (apiKey, options = {}, context = { messages: [{ role: "user", content: "Reply OK" }] }) => streamKiro({
     id: "claude-opus-5-5", name: "Claude Opus 5.5", api: "kiro-custom", provider: "kiro",
     reasoning: false, input: ["text"], contextWindow: 1_000_000, maxTokens: 128_000, ...model,
-  }, { messages: [{ role: "user", content: "Reply OK" }] }, { ...options, apiKey }).result()
+  }, context, { ...options, apiKey }).result()
 }
 
 /** Streams one "Reply OK" turn through `fetchImpl` and returns the final message. */
@@ -655,6 +655,23 @@ describe("tool calls written as text", () => {
     assert.equal(output.stopReason, "toolUse", output.errorMessage)
     const calls = output.content.flatMap((block) => block.type === "toolCall" ? [[block.name, block.arguments]] : [])
     assert.deepEqual(calls, [["read", { path: "a" }]])
+  })
+
+  // Kiro caps tool names at 64 characters, so the model sees and echoes the shortened name.
+  it("gives a recovered call the tool's full name", async () => {
+    const name = `mcp_${"long_server_name_".repeat(4)}read`
+    const payload = buildKiroPayload("minimax-m2-5", { messages: [], tools: [{ name, description: "Read" }] })
+    const tools = payload.conversationState.currentMessage.userInputMessage.userInputMessageContext?.tools as
+      Array<{ toolSpecification: { name: string } }>
+    const shortName = tools[0].toolSpecification.name
+    assert.notEqual(shortName, name)
+
+    const { fetchImpl } = kiro([content(`[Called ${shortName} with args: {"path":"a"}]`)])
+    const output = await kiroTurns(fetchImpl, { id: "minimax-m2-5" })("long-name-token", {}, {
+      messages: [{ role: "user", content: "Read a" }], tools: [{ name, description: "Read" }],
+    })
+    assert.equal(output.stopReason, "toolUse", output.errorMessage)
+    assert.deepEqual(output.content.flatMap((block) => block.type === "toolCall" ? [block.name] : []), [name])
   })
 
   it("leaves Claude's text as written", async () => {
