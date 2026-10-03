@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { after, describe, it } from "node:test"
 import type { AssistantMessageEvent, AssistantMessageLike, ContextLike, CoreDependencies, ModelLike, StreamOptions } from "../src/types.ts"
 import { chunked, content, eventStream, frame, frames, reasoning } from "./event-frames.ts"
@@ -438,6 +438,24 @@ describe("profile region", () => {
     }) as typeof fetch, "eu-organization-token")
     assert.equal(output.stopReason, "stop", output.errorMessage)
     assert.deepEqual(inferenceHosts, ["runtime.eu-central-1.kiro.dev"])
+  })
+
+  it("uses the profile saved at login without listing profiles", async (t) => {
+    const metaPath = join(home, ".omp", "agent", "kiro-auth-meta.json")
+    const saved = existsSync(metaPath) ? readFileSync(metaPath, "utf-8") : undefined
+    t.after(() => saved === undefined ? rmSync(metaPath, { force: true }) : writeFileSync(metaPath, saved))
+    const storedArn = "arn:aws:codewhisperer:eu-central-1:123456789012:profile/STORED"
+    mkdirSync(dirname(metaPath), { recursive: true })
+    writeFileSync(metaPath, JSON.stringify({ method: "social", profileArn: storedArn }))
+    const inference: { host: string; profileArn?: string }[] = []
+    const output = await streamOnce((async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (url.pathname === "/List-Available-Profiles") return response({ message: "Unexpected profile lookup" }, 500)
+      inference.push({ host: url.hostname, profileArn: JSON.parse(String(init?.body)).profileArn })
+      return eventStream(content("OK"))
+    }) as typeof fetch, "stored-profile-token")
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.deepEqual(inference, [{ host: "runtime.eu-central-1.kiro.dev", profileArn: storedArn }])
   })
 })
 
