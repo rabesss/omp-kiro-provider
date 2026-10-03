@@ -278,6 +278,7 @@ describe("fetchDynamicKiroModels", () => {
       apiKey: "token-1",
       apiBase: API_BASE,
       overlay: OVERLAY,
+      env: {},
       fetchImpl,
     })
     const opus = models.find((model) => model.id === "claude-opus-5-5")
@@ -520,6 +521,7 @@ describe("fetchDynamicKiroModels", () => {
       apiBase: API_BASE,
       profileArn: euArn,
       overlay: OVERLAY,
+      env: {},
       fetchImpl: (async (url: string) => {
         urls.push(url)
         return jsonResponse(200, { models: [{ modelId: "claude-opus-5.5" }] })
@@ -552,6 +554,7 @@ describe("fetchDynamicKiroModels", () => {
       apiKey: "aoa_example_oauth_token",
       apiBase: API_BASE,
       overlay: OVERLAY,
+      env: {},
       fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {
         seen.push(header(init, "TokenType"))
         return new URL(String(input)).pathname === "/List-Available-Profiles"
