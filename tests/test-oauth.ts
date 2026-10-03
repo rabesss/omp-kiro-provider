@@ -704,6 +704,16 @@ describe("stream errors", () => {
     assert.equal(calls.inference, 2)
   })
 
+  it("retries a stream that fails on Kiro's side before anything is shown", async () => {
+    const unavailable = frame("serviceUnavailableError", { message: "Service is unavailable" },
+      { ":message-type": "exception", ":exception-type": "ServiceUnavailableException" })
+    const { calls, fetchImpl } = kiro([frames(content("Discarded"), unavailable), content("OK")])
+    const output = await streamOnce(fetchImpl, "unavailable-token")
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.equal(calls.inference, 2)
+    assert.equal(output.content[0].type === "text" && output.content[0].text, "OK")
+  })
+
   it("retries a capacity error that arrives with the first answer text", async () => {
     const { calls, fetchImpl } = kiro([frames(content("Discarded"), capacity), content("OK")])
     const output = await streamOnce(fetchImpl, "capacity-same-chunk-token")
