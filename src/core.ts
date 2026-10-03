@@ -439,6 +439,8 @@ export function createStreamKiro(deps: CoreDependencies) {
       let hiddenThinkingBlock: ThinkingContent | undefined
       let hiddenMarkerTimer: ReturnType<typeof setTimeout> | null = null
       let hiddenMarkerEmitted = false
+      // Index of a breadcrumb this attempt closed or took over, until those events flush.
+      let releasedBreadcrumbIndex: number | null = null
 
       // --- Helper: buffer a text_end event ---
       const endTextBlock = () => {
@@ -507,6 +509,7 @@ export function createStreamKiro(deps: CoreDependencies) {
               delete hiddenThinkingBlock.redacted
               reasoningBlock = hiddenThinkingBlock
               currentReasoningIdx = hiddenThinkingIndex
+              releasedBreadcrumbIndex = hiddenThinkingIndex
               hiddenThinkingIndex = null
             }
             if (!reasoningBlock) {
@@ -592,6 +595,14 @@ export function createStreamKiro(deps: CoreDependencies) {
 
       // --- Helper: reset per-attempt state and discard buffer ---
       const resetAttemptState = () => {
+        // A retry drops the events that closed or took over the breadcrumb before they
+        // reached the screen, so the screen still shows the breadcrumb there.
+        if (releasedBreadcrumbIndex !== null && hiddenThinkingBlock) {
+          hiddenThinkingBlock.thinking = hiddenMarkerEmitted ? HIDDEN_REASONING_PLACEHOLDER : ""
+          hiddenThinkingBlock.redacted = true
+          hiddenThinkingIndex = releasedBreadcrumbIndex
+          releasedBreadcrumbIndex = null
+        }
         // An open hidden-reasoning breadcrumb is already on screen; keep it at its index.
         output.content = hiddenThinkingIndex !== null && hiddenThinkingBlock ? [hiddenThinkingBlock] : []
         output.stopReason = "stop"
@@ -623,17 +634,24 @@ export function createStreamKiro(deps: CoreDependencies) {
         }
       }
 
-      const closeHiddenBreadcrumb = () => {
+      // Within an attempt the close is buffered with the events that caused it, so a
+      // retry that drops them leaves the breadcrumb open. `now` closes it on screen at once.
+      const closeHiddenBreadcrumb = (now = false) => {
         cancelHiddenMarkerTimer()
-        if (hiddenThinkingIndex !== null) {
-          stream.push({
-            type: "thinking_end",
-            contentIndex: hiddenThinkingIndex,
-            content: "",
-            partial: output,
-          })
-          hiddenThinkingIndex = null
+        if (hiddenThinkingIndex === null) return
+        const event: AssistantMessageEvent = {
+          type: "thinking_end",
+          contentIndex: hiddenThinkingIndex,
+          content: "",
+          partial: output,
         }
+        if (now) {
+          stream.push(event)
+        } else {
+          eventBuffer.push(event)
+          releasedBreadcrumbIndex = hiddenThinkingIndex
+        }
+        hiddenThinkingIndex = null
       }
 
       // --- Helper: flush buffered events to stream ---
@@ -644,6 +662,7 @@ export function createStreamKiro(deps: CoreDependencies) {
         }
         eventBuffer = []
         attemptEventsFlushed = true
+        releasedBreadcrumbIndex = null
       }
 
       try {
@@ -937,7 +956,7 @@ export function createStreamKiro(deps: CoreDependencies) {
             // Empty response detection: got 200 but no answer text or tool call.
             // Reasoning alone is not an answer, but once it is on screen a retry
             // would show it twice, so report the turn instead.
-            const hasAnswer = output.content.some((block) => block.type !== "thinking")
+            const hasAnswer = sawAnyToolCalls || output.content.some((block) => block.type !== "thinking")
             if (!hasAnswer && !attemptEventsFlushed && outerAttempt < maxAttempts - 1) {
               try { await reader?.cancel() } catch { /* ok */ }
               try { reader?.releaseLock() } catch { /* ok */ }
@@ -1069,7 +1088,7 @@ export function createStreamKiro(deps: CoreDependencies) {
       } catch (error: unknown) {
         // Non-retryable error or exhausted retries
         cancelHiddenMarkerTimer()
-        closeHiddenBreadcrumb()
+        closeHiddenBreadcrumb(true)
         const reason: ErrorReason = controller.signal.aborted ? "aborted" : "error"
         output.stopReason = reason
         output.errorMessage =

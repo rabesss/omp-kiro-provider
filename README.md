@@ -139,8 +139,8 @@ or `models.json` says so. A model in neither gets text-only input and conservati
 `models.json` is also OMP's static `models` catalog, used before the first discovery and whenever
 it fails. Discovery requires auth; there is no public catalog. When you are signed out or discovery
 fails, `fetchDynamicModels` fails rather than returning an empty list, because OMP would take an
-empty list as the account's whole catalog and drop every Kiro model. OMP then keeps its cached
-catalog or `models.json`.
+empty list as the account's whole catalog and drop every model discovered so far. OMP then keeps
+its cached catalog or `models.json`.
 
 The provider does not write `models.json` at runtime. There is no weekly updater.
 

@@ -510,6 +510,15 @@ describe("reasoning stream", () => {
     assert.equal(calls.inference, 2)
   })
 
+  it("accepts a tool call that never sends its closing frame as the answer", async () => {
+    const toolCall = frame("toolUseEvent", { toolUseId: "tool-1", name: "read", input: '{"path":"a"}' })
+    const { calls, fetchImpl } = kiro([toolCall, content("OK")])
+    const output = await streamOnce(fetchImpl, "unclosed-tool-token")
+    assert.equal(output.stopReason, "toolUse", output.errorMessage)
+    assert.equal(calls.inference, 1)
+    assert.deepEqual(output.content.map((block) => block.type), ["toolCall"])
+  })
+
   it("reports a turn that only reasoned instead of replaying the shown reasoning", async () => {
     const { calls, fetchImpl } = kiro([reasoning("Thinking"), frames(reasoning("Thinking"), content("OK"))])
     const output = await streamOnce(fetchImpl, "reasoning-only-token", { reasoning: "high" })
@@ -649,6 +658,30 @@ describe("reasoning stream", () => {
 describe("stream errors", () => {
   const capacity = frame("throttlingError", { message: "I am experiencing high traffic", reason: "INSUFFICIENT_MODEL_CAPACITY" },
     { ":message-type": "exception", ":exception-type": "ThrottlingException" })
+
+  it("keeps the hidden-reasoning breadcrumb when a retry discards the reasoning that took it over", async () => {
+    const { calls, fetchImpl } = kiro([frames(reasoning("draft"), capacity), content("OK")])
+    const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true })(
+      "breadcrumb-retry-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.equal(calls.inference, 2)
+    assert.deepEqual(output.content, [
+      { type: "thinking", thinking: "", redacted: true },
+      { type: "text", text: "OK" },
+    ])
+  })
+
+  it("keeps the hidden-reasoning breadcrumb when a retry discards the answer that closed it", async () => {
+    const { calls, fetchImpl } = kiro([frames(content("Discarded"), capacity), content("OK")])
+    const output = await kiroTurns(fetchImpl, { id: "claude-opus-4-7", reasoning: true, reasoningHidden: true })(
+      "breadcrumb-close-retry-token", { reasoning: "high" })
+    assert.equal(output.stopReason, "stop", output.errorMessage)
+    assert.equal(calls.inference, 2)
+    assert.deepEqual(output.content, [
+      { type: "thinking", thinking: "", redacted: true },
+      { type: "text", text: "OK" },
+    ])
+  })
 
   it("retries a turn Kiro had no capacity for", async () => {
     const { calls, fetchImpl } = kiro([capacity, content("OK")])
