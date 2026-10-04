@@ -176,6 +176,8 @@ node --version
 npm test
 ```
 
+CI runs `npm test` on Node.js 22 and 24 for every pull request and every push to `master`.
+
 Useful files:
 
 ```text

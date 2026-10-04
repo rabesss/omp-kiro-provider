@@ -1,1 +1,6 @@
 .zread/
+droid-wiki/
+node_modules/
+.env
+.env.*
+*.log

@@ -12,6 +12,8 @@ For development, use Node.js 22 or newer and run:
 npm test
 ```
 
+The `Test` workflow runs the same command on Node.js 22 and 24 for every pull request.
+
 ## PR Guidelines
 
 - Keep PRs small and focused.
