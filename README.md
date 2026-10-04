@@ -169,12 +169,14 @@ the provider then derives a readable name from the id: `claude-opus-5.5` is show
 
 ## Development
 
-No package-manager install is required for normal use. Contributors can run tests with Node.js 22 or newer:
+No package-manager install is required for normal use. Contributors can run tests with Node.js 22.18 or newer, which runs TypeScript without a flag:
 
 ```sh
 node --version
 npm test
 ```
+
+CI runs `npm test` on Node.js 22 and 24 for every pull request and every push to `master`.
 
 Useful files:
 

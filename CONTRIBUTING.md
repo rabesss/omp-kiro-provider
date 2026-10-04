@@ -6,11 +6,13 @@ Thanks for helping improve `omp-kiro-provider`.
 
 Normal usage does not require installing dependencies. The provider is loaded by OMP from the checked-out source tree.
 
-For development, use Node.js 22 or newer and run:
+For development, use Node.js 22.18 or newer (the first 22.x that runs TypeScript without a flag) and run:
 
 ```sh
 npm test
 ```
+
+The `Test` workflow runs the same command on Node.js 22 and 24 for every pull request.
 
 ## PR Guidelines
 
