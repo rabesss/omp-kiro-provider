@@ -10,7 +10,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs; let a running master run finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -20,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 22 is the oldest version README.md and CONTRIBUTING.md support.
+        # setup-node installs the latest 22.x; README.md and CONTRIBUTING.md require 22.18 or newer.
         node: [22, 24]
     steps:
       - name: Checkout repository
